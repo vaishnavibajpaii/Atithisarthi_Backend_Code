@@ -99,6 +99,14 @@
     "seed:staging": "node scripts/seed-staging.js",
     "test:golden-pricing": "node scripts/verify-golden-pricing.js",
     "test:payment-hardening": "node --test tests/payment-hardening.test.js",
+    "test:tenant-runtime-context": "node --test tests/tenant-runtime-context.test.js",
+    "test:tenant-runtime-verifier": "node --test tests/tenant-runtime-connection-verifier.test.js",
+    "test:tenant-request-context": "node --test tests/tenant-request-context.test.js",
+    "test:tenant-public-hotel": "node --test tests/tenant-public-hotel.test.js",
+    "test:tenant-public-hotel-live-verifier": "node --test tests/tenant-public-hotel-live-verifier.test.js",
+    "verify:tenant-runtime-connection": "node scripts/verify-tenant-runtime-connection.js",
+    "verify:tenant-public-hotel-runtime": "node scripts/verify-tenant-public-hotel-runtime.js",
+    "verify:tenant-public-hotel-live": "node scripts/verify-tenant-public-hotel-live.js",
     "verify:task2b-preflight": "node scripts/verify-task2b-preflight.js",
     "verify:task2b-duplicate-webhook": "node scripts/verify-task2b-duplicate-webhook-runtime.js",
     "verify:task2b-idempotency": "node scripts/verify-task2b-idempotency-runtime.js",
@@ -118,8 +126,8 @@
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.1.1",
     "nodemailer": "^8.0.5",
+    "pg": "^8.23.0",
     "qrcode": "^1.5.4",
     "zod": "^4.3.6"
   }
 }
-

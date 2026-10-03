@@ -18,6 +18,22 @@ port: Number(getEnv("PORT", "10000")),
   supabaseUrl: getRequiredEnv("SUPABASE_URL"),
   supabaseServiceRoleKey: getRequiredEnv("SUPABASE_SERVICE_ROLE_KEY"),
 
+  tenantRuntimeEnabled:
+    getEnv("TENANT_RUNTIME_ENABLED", "false") === "true",
+  tenantRuntimePublicHotelEnabled:
+    getEnv("TENANT_RUNTIME_PUBLIC_HOTEL_ENABLED", "false") === "true",
+  tenantDatabaseUrl: getEnv("TENANT_DATABASE_URL", ""),
+  tenantDatabasePoolMax: Number(getEnv("TENANT_DATABASE_POOL_MAX", "10")),
+  tenantDatabaseIdleTimeoutMs: Number(
+    getEnv("TENANT_DATABASE_IDLE_TIMEOUT_MS", "30000")
+  ),
+  tenantDatabaseConnectionTimeoutMs: Number(
+    getEnv("TENANT_DATABASE_CONNECTION_TIMEOUT_MS", "10000")
+  ),
+  tenantDatabaseStatementTimeoutMs: Number(
+    getEnv("TENANT_DATABASE_STATEMENT_TIMEOUT_MS", "15000")
+  ),
+
   jwtSecret: getRequiredEnv("JWT_SECRET"),
   jwtExpiresIn: getEnv("JWT_EXPIRES_IN", "7d"),
   qrContextSigningSecret: getEnv("QR_CONTEXT_SIGNING_SECRET", ""),

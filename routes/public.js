@@ -1,10 +1,18 @@
 const express = require("express");
 const { supabase } = require("../utils/supabase");
+const { env } = require("../config/env");
 const {
   ensurePublicHotelAccess,
   normalizePublicText
 } = require("../utils/public-hotel-access");
 const { fetchHotelOrderingSettings } = require("../utils/hotel-ordering-settings");
+const {
+  getTenantRequestScope
+} = require("../utils/tenant-request-context");
+const {
+  fetchTenantPublicHotelBundle,
+  fetchTenantPublicOrderingSettings
+} = require("../utils/tenant-public-hotel");
 const { ensureHotelFeatureEnabled } = require("../middleware/require-hotel-feature");
 const {
   fetchMenuComboPresentationMap,
@@ -217,11 +225,17 @@ router.get("/hotel/:slug", async (req, res) => {
       return;
     }
 
-    const cacheKey = `hotel:${slug}`;
+    const canonicalSlug = hotelAccess.slug;
+    const cacheKey = `hotel:${canonicalSlug}`;
     const cachedPayload = getCachedPublicRoutePayload(cacheKey);
 
     if (cachedPayload) {
-      const orderingSettings = await fetchHotelOrderingSettings(slug);
+      const orderingSettings = env.tenantRuntimePublicHotelEnabled
+        ? await fetchTenantPublicOrderingSettings(
+          getTenantRequestScope(req),
+          canonicalSlug
+        )
+        : await fetchHotelOrderingSettings(slug);
       const refreshedPayload = {
         ...cachedPayload,
         hotel: {
@@ -233,13 +247,27 @@ router.get("/hotel/:slug", async (req, res) => {
       return res.json(refreshedPayload);
     }
 
-    const { data, error } = await supabase
-      .from("hotel_profiles")
-      .select(PUBLIC_HOTEL_PROFILE_FIELDS)
-      .eq("hotel_slug", slug)
-      .maybeSingle();
+    let data;
+    let orderingSettings;
 
-    if (error) throw error;
+    if (env.tenantRuntimePublicHotelEnabled) {
+      const tenantResult = await fetchTenantPublicHotelBundle(
+        getTenantRequestScope(req),
+        canonicalSlug
+      );
+      data = tenantResult.profile;
+      orderingSettings = tenantResult.orderingSettings;
+    } else {
+      const profileResult = await supabase
+        .from("hotel_profiles")
+        .select(PUBLIC_HOTEL_PROFILE_FIELDS)
+        .eq("hotel_slug", slug)
+        .maybeSingle();
+
+      if (profileResult.error) throw profileResult.error;
+      data = profileResult.data;
+      orderingSettings = await fetchHotelOrderingSettings(slug);
+    }
 
     if (!data) {
       return res.status(404).json({
@@ -247,8 +275,6 @@ router.get("/hotel/:slug", async (req, res) => {
         message: "Hotel profile not found"
       });
     }
-
-    const orderingSettings = await fetchHotelOrderingSettings(slug);
 
     const payload = {
       success: true,

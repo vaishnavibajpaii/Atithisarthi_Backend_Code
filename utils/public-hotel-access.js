@@ -1,8 +1,13 @@
 const { supabase } = require("./supabase");
 const { env } = require("../config/env");
+const {
+  attachTenantRequestContext
+} = require("./tenant-request-context");
 
 const PUBLIC_HOTEL_ACCESS_CACHE_TTL_MS = 30 * 1000;
 const PUBLIC_HOTEL_ACCESS_FIELDS = [
+  "id",
+  "tenant_id",
   "slug",
   "primary_domain",
   "subdomain",
@@ -308,6 +313,13 @@ async function ensurePublicHotelAccess(req, res, slug = "", options = {}) {
     });
     return null;
   }
+
+  attachTenantRequestContext(req, {
+    tenantId: hotelAccess.tenant_id,
+    propertyId: hotelAccess.id,
+    propertySlug: hotelAccess.slug,
+    source: "public_hotel_access"
+  });
 
   return hotelAccess;
 }

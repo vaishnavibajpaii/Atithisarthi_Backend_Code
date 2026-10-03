@@ -108,6 +108,11 @@ function getReadinessChecks() {
       hasText(env.notificationSmtpUser) &&
       hasText(env.notificationSmtpPass)
     );
+  const tenantRuntimeReady =
+    !env.tenantRuntimeEnabled || hasText(env.tenantDatabaseUrl);
+  const tenantPublicHotelReady =
+    !env.tenantRuntimePublicHotelEnabled ||
+    (env.tenantRuntimeEnabled && hasText(env.tenantDatabaseUrl));
 
   return [
     buildReadinessCheck(
@@ -154,6 +159,16 @@ function getReadinessChecks() {
       "email_notifications",
       emailNotificationReady,
       "missing_email_notification_config"
+    ),
+    buildReadinessCheck(
+      "tenant_runtime_database",
+      tenantRuntimeReady,
+      "missing_tenant_database_url"
+    ),
+    buildReadinessCheck(
+      "tenant_runtime_public_hotel",
+      tenantPublicHotelReady,
+      "tenant_public_hotel_requires_tenant_runtime"
     )
   ];
 }
