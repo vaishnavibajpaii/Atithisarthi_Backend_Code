@@ -32,6 +32,12 @@ const {
   fetchTenantPublicGallery
 } = require("../utils/tenant-public-gallery");
 const {
+  buildPublicTestimonialsPayload
+} = require("../utils/public-testimonials-presentation");
+const {
+  fetchTenantPublicTestimonials
+} = require("../utils/tenant-public-testimonials");
+const {
   HOTEL_FEATURE_KEYS,
   buildFeatureDisabledPayload,
   isHotelFeatureEnabled
@@ -468,7 +474,8 @@ router.get("/testimonials/:slug", async (req, res) => {
       return;
     }
 
-    const cacheKey = `testimonials:${slug}`;
+    const canonicalSlug = hotelAccess.slug;
+    const cacheKey = `testimonials:${canonicalSlug}`;
     const cachedPayload = getCachedPublicRoutePayload(cacheKey);
 
     if (cachedPayload) {
@@ -476,65 +483,33 @@ router.get("/testimonials/:slug", async (req, res) => {
       return res.json(cachedPayload);
     }
 
-    const { data, error } = await supabase
-      .from("testimonials")
-      .select(PUBLIC_TESTIMONIAL_FIELDS)
-      .eq("hotel_slug", slug)
-      .eq("is_archived", false)
-      .eq("is_active", true)
-      .eq("is_approved", true);
-
-    if (error) {
-      if (isMissingTestimonialsRelationError(error)) {
-        const payload = {
-          success: true,
-          testimonials: []
-        };
-
-        setCachedPublicRoutePayload(cacheKey, payload);
-        res.set("Cache-Control", PUBLIC_ROUTE_CACHE_CONTROL);
-        return res.json(payload);
+    let testimonialItems;
+    try {
+      if (env.tenantRuntimePublicTestimonialsEnabled) {
+        testimonialItems = await fetchTenantPublicTestimonials(
+          getTenantRequestScope(req),
+          canonicalSlug
+        );
+      } else {
+        const { data, error } = await supabase
+          .from("testimonials")
+          .select(PUBLIC_TESTIMONIAL_FIELDS)
+          .eq("hotel_slug", canonicalSlug)
+          .eq("is_archived", false)
+          .eq("is_active", true)
+          .eq("is_approved", true);
+        if (error) throw error;
+        testimonialItems = data || [];
       }
-
-      throw error;
+    } catch (error) {
+      if (!isMissingTestimonialsRelationError(error)) throw error;
+      testimonialItems = [];
     }
 
-    const testimonials = (data || [])
-      .filter(
-        (item) =>
-          item &&
-          item.is_archived !== true &&
-          item.is_active !== false &&
-          item.is_approved === true
-      )
-      .sort((left, right) => {
-        const leftSort = Number.isFinite(Number(left?.sort_order)) ? Number(left.sort_order) : 0;
-        const rightSort = Number.isFinite(Number(right?.sort_order)) ? Number(right.sort_order) : 0;
-
-        if (leftSort !== rightSort) {
-          return leftSort - rightSort;
-        }
-
-        const leftCreated = Date.parse(left?.created_at || "") || 0;
-        const rightCreated = Date.parse(right?.created_at || "") || 0;
-
-        return rightCreated - leftCreated;
-      })
-      .map((item) => ({
-        id: item.id,
-        hotelSlug: item.hotel_slug || slug,
-        name: item.guest_name || item.name || "",
-        role: item.guest_role || item.role || "",
-        text: item.review_text || item.text || "",
-        stars: Number(item.star_rating ?? item.stars ?? 5) || 5,
-        avatar: item.avatar_url || item.avatar || ""
-      }))
-      .filter((item) => item.name && item.text);
-
-    const payload = {
-      success: true,
-      testimonials
-    };
+    const payload = buildPublicTestimonialsPayload(
+      testimonialItems,
+      canonicalSlug
+    );
 
     setCachedPublicRoutePayload(cacheKey, payload);
     res.set("Cache-Control", PUBLIC_ROUTE_CACHE_CONTROL);

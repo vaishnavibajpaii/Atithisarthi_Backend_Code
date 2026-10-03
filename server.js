@@ -119,6 +119,9 @@ function getReadinessChecks() {
   const tenantPublicGalleryReady =
     !env.tenantRuntimePublicGalleryEnabled ||
     (env.tenantRuntimeEnabled && hasText(env.tenantDatabaseUrl));
+  const tenantPublicTestimonialsReady =
+    !env.tenantRuntimePublicTestimonialsEnabled ||
+    (env.tenantRuntimeEnabled && hasText(env.tenantDatabaseUrl));
 
   return [
     buildReadinessCheck(
@@ -185,6 +188,11 @@ function getReadinessChecks() {
       "tenant_runtime_public_gallery",
       tenantPublicGalleryReady,
       "tenant_public_gallery_requires_tenant_runtime"
+    ),
+    buildReadinessCheck(
+      "tenant_runtime_public_testimonials",
+      tenantPublicTestimonialsReady,
+      "tenant_public_testimonials_requires_tenant_runtime"
     )
   ];
 }
