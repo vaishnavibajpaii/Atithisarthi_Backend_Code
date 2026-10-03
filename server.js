@@ -116,6 +116,9 @@ function getReadinessChecks() {
   const tenantPublicMenuReady =
     !env.tenantRuntimePublicMenuEnabled ||
     (env.tenantRuntimeEnabled && hasText(env.tenantDatabaseUrl));
+  const tenantPublicGalleryReady =
+    !env.tenantRuntimePublicGalleryEnabled ||
+    (env.tenantRuntimeEnabled && hasText(env.tenantDatabaseUrl));
 
   return [
     buildReadinessCheck(
@@ -177,6 +180,11 @@ function getReadinessChecks() {
       "tenant_runtime_public_menu",
       tenantPublicMenuReady,
       "tenant_public_menu_requires_tenant_runtime"
+    ),
+    buildReadinessCheck(
+      "tenant_runtime_public_gallery",
+      tenantPublicGalleryReady,
+      "tenant_public_gallery_requires_tenant_runtime"
     )
   ];
 }

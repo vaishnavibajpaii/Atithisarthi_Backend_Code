@@ -26,6 +26,12 @@ const {
   buildPublicMenuPayload
 } = require("../utils/public-menu-presentation");
 const {
+  buildPublicGalleryPayload
+} = require("../utils/public-gallery-presentation");
+const {
+  fetchTenantPublicGallery
+} = require("../utils/tenant-public-gallery");
+const {
   HOTEL_FEATURE_KEYS,
   buildFeatureDisabledPayload,
   isHotelFeatureEnabled
@@ -411,7 +417,8 @@ router.get("/gallery/:slug", async (req, res) => {
       return;
     }
 
-    const cacheKey = `gallery:${slug}`;
+    const canonicalSlug = hotelAccess.slug;
+    const cacheKey = `gallery:${canonicalSlug}`;
     const cachedPayload = getCachedPublicRoutePayload(cacheKey);
 
     if (cachedPayload) {
@@ -419,28 +426,26 @@ router.get("/gallery/:slug", async (req, res) => {
       return res.json(cachedPayload);
     }
 
-    const { data, error } = await supabase
-      .from("gallery_items")
-      .select(PUBLIC_GALLERY_FIELDS)
-      .eq("hotel_slug", slug)
-      .eq("is_active", true)
-      .eq("is_archived", false)
-      .order("sort_order", { ascending: true })
-      .order("id", { ascending: true });
+    let galleryItems;
+    if (env.tenantRuntimePublicGalleryEnabled) {
+      galleryItems = await fetchTenantPublicGallery(
+        getTenantRequestScope(req),
+        canonicalSlug
+      );
+    } else {
+      const { data, error } = await supabase
+        .from("gallery_items")
+        .select(PUBLIC_GALLERY_FIELDS)
+        .eq("hotel_slug", canonicalSlug)
+        .eq("is_active", true)
+        .eq("is_archived", false)
+        .order("sort_order", { ascending: true })
+        .order("id", { ascending: true });
+      if (error) throw error;
+      galleryItems = data || [];
+    }
 
-    if (error) throw error;
-
-    const payload = {
-      success: true,
-      gallery: (data || []).map((item) => ({
-        id: item.id,
-        imageUrl: item.image_url || "",
-        storagePath: item.storage_path || "",
-        alt: item.alt || "",
-        layoutVariant: item.layout_variant || "standard",
-        sortOrder: Number(item.sort_order || 0)
-      }))
-    };
+    const payload = buildPublicGalleryPayload(galleryItems);
 
     setCachedPublicRoutePayload(cacheKey, payload);
     res.set("Cache-Control", PUBLIC_ROUTE_CACHE_CONTROL);
