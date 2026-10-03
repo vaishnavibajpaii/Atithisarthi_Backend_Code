@@ -38,6 +38,12 @@ const {
   fetchTenantPublicTestimonials
 } = require("../utils/tenant-public-testimonials");
 const {
+  buildPublicPopupNotificationPayload
+} = require("../utils/public-popup-notification-presentation");
+const {
+  fetchTenantPublicPopupNotifications
+} = require("../utils/tenant-public-popup-notifications");
+const {
   HOTEL_FEATURE_KEYS,
   buildFeatureDisabledPayload,
   isHotelFeatureEnabled
@@ -159,58 +165,6 @@ function isMissingPopupNotificationsRelationError(error) {
         details.includes("schema cache") ||
         details.includes("could not find")))
   );
-}
-
-function isPopupNotificationWithinActiveWindow(notification = {}, now = new Date()) {
-  const startAt = notification?.start_at ? Date.parse(notification.start_at) : null;
-  const endAt = notification?.end_at ? Date.parse(notification.end_at) : null;
-  const nowMs = now.getTime();
-
-  if (Number.isFinite(startAt) && startAt > nowMs) {
-    return false;
-  }
-
-  if (Number.isFinite(endAt) && endAt < nowMs) {
-    return false;
-  }
-
-  return true;
-}
-
-function normalizePopupNotificationLink(value = "") {
-  const candidate = normalizePublicText(value, 2000);
-
-  if (!candidate) {
-    return "";
-  }
-
-  if (candidate.startsWith("/")) {
-    return candidate;
-  }
-
-  try {
-    const parsedUrl = new URL(candidate);
-    return ["http:", "https:"].includes(parsedUrl.protocol) ? parsedUrl.toString() : "";
-  } catch {
-    return "";
-  }
-}
-
-function mapPublicPopupNotification(notification = {}) {
-  return {
-    id: notification.id,
-    hotelSlug: normalizePublicText(notification.hotel_slug, 120),
-    title: normalizePublicText(notification.title, 160),
-    description: normalizePublicText(notification.description, 4000),
-    imageUrl: normalizePublicText(notification.image_url, 2000),
-    storagePath: normalizePublicText(notification.storage_path, 500),
-    ctaText: normalizePublicText(notification.cta_text, 120),
-    ctaLink: normalizePopupNotificationLink(notification.cta_link),
-    displayMode: normalizePublicText(notification.display_mode, 40).toLowerCase(),
-    startAt: normalizePublicText(notification.start_at, 80),
-    endAt: normalizePublicText(notification.end_at, 80),
-    priority: Number.isFinite(Number(notification.priority)) ? Number(notification.priority) : 0
-  };
 }
 
 function mapPublicOrderingSettings(settings = {}) {
@@ -535,7 +489,8 @@ router.get("/popup-notification/:slug", async (req, res) => {
       return;
     }
 
-    const cacheKey = `popup-notification:${slug}`;
+    const canonicalSlug = hotelAccess.slug;
+    const cacheKey = `popup-notification:${canonicalSlug}`;
     const cachedPayload = getCachedPublicRoutePayload(cacheKey);
 
     if (cachedPayload) {
@@ -543,39 +498,31 @@ router.get("/popup-notification/:slug", async (req, res) => {
       return res.json(cachedPayload);
     }
 
-    const { data, error } = await supabase
-      .from("hotel_popup_notifications")
-      .select(PUBLIC_POPUP_NOTIFICATION_FIELDS)
-      .eq("hotel_slug", slug)
-      .eq("is_active", true)
-      .order("priority", { ascending: false })
-      .order("created_at", { ascending: false })
-      .limit(20);
-
-    if (error) {
-      if (isMissingPopupNotificationsRelationError(error)) {
-        const payload = {
-          success: true,
-          notifications: [],
-          notification: null
-        };
-
-        setCachedPublicRoutePayload(cacheKey, payload);
-        res.set("Cache-Control", PUBLIC_ROUTE_CACHE_CONTROL);
-        return res.json(payload);
+    let popupItems;
+    try {
+      if (env.tenantRuntimePublicPopupEnabled) {
+        popupItems = await fetchTenantPublicPopupNotifications(
+          getTenantRequestScope(req),
+          canonicalSlug
+        );
+      } else {
+        const { data, error } = await supabase
+          .from("hotel_popup_notifications")
+          .select(PUBLIC_POPUP_NOTIFICATION_FIELDS)
+          .eq("hotel_slug", canonicalSlug)
+          .eq("is_active", true)
+          .order("priority", { ascending: false })
+          .order("created_at", { ascending: false })
+          .limit(20);
+        if (error) throw error;
+        popupItems = data || [];
       }
-
-      throw error;
+    } catch (error) {
+      if (!isMissingPopupNotificationsRelationError(error)) throw error;
+      popupItems = [];
     }
 
-    const activeNotifications = (data || [])
-      .filter((notification) => isPopupNotificationWithinActiveWindow(notification))
-      .map((notification) => mapPublicPopupNotification(notification));
-    const payload = {
-      success: true,
-      notifications: activeNotifications,
-      notification: activeNotifications[0] || null
-    };
+    const payload = buildPublicPopupNotificationPayload(popupItems);
 
     setCachedPublicRoutePayload(cacheKey, payload);
     res.set("Cache-Control", PUBLIC_ROUTE_CACHE_CONTROL);

@@ -122,6 +122,9 @@ function getReadinessChecks() {
   const tenantPublicTestimonialsReady =
     !env.tenantRuntimePublicTestimonialsEnabled ||
     (env.tenantRuntimeEnabled && hasText(env.tenantDatabaseUrl));
+  const tenantPublicPopupReady =
+    !env.tenantRuntimePublicPopupEnabled ||
+    (env.tenantRuntimeEnabled && hasText(env.tenantDatabaseUrl));
 
   return [
     buildReadinessCheck(
@@ -193,6 +196,11 @@ function getReadinessChecks() {
       "tenant_runtime_public_testimonials",
       tenantPublicTestimonialsReady,
       "tenant_public_testimonials_requires_tenant_runtime"
+    ),
+    buildReadinessCheck(
+      "tenant_runtime_public_popup",
+      tenantPublicPopupReady,
+      "tenant_public_popup_requires_tenant_runtime"
     )
   ];
 }
