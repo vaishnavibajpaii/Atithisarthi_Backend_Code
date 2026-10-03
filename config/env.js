@@ -22,6 +22,8 @@ port: Number(getEnv("PORT", "10000")),
     getEnv("TENANT_RUNTIME_ENABLED", "false") === "true",
   tenantRuntimePublicHotelEnabled:
     getEnv("TENANT_RUNTIME_PUBLIC_HOTEL_ENABLED", "false") === "true",
+  tenantRuntimePublicMenuEnabled:
+    getEnv("TENANT_RUNTIME_PUBLIC_MENU_ENABLED", "false") === "true",
   tenantDatabaseUrl: getEnv("TENANT_DATABASE_URL", ""),
   tenantDatabasePoolMax: Number(getEnv("TENANT_DATABASE_POOL_MAX", "10")),
   tenantDatabaseIdleTimeoutMs: Number(

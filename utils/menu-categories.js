@@ -286,6 +286,7 @@ module.exports = {
   fetchHotelMenuCategories,
   filterEligibleMenuItems,
   getSafeMenuImageUrl,
+  isCategoryEligible,
   isMissingMenuCategoriesSchemaError,
   normalizeMenuCategoryKey,
   normalizeMenuCategoryText,

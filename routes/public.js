@@ -16,20 +16,27 @@ const {
 const { ensureHotelFeatureEnabled } = require("../middleware/require-hotel-feature");
 const {
   fetchMenuComboPresentationMap,
-  isMenuComboPresentationCurrentlyAvailable,
   isMissingMenuComboSchemaError
 } = require("../utils/menu-combos");
+const {
+  fetchTenantPublicMenuData,
+  fetchTenantPublicMenuFeature
+} = require("../utils/tenant-public-menu");
+const {
+  buildPublicMenuPayload
+} = require("../utils/public-menu-presentation");
+const {
+  HOTEL_FEATURE_KEYS,
+  buildFeatureDisabledPayload,
+  isHotelFeatureEnabled
+} = require("../utils/hotel-feature-settings");
 
 const {
   getCachedPublicRoutePayload,
   setCachedPublicRoutePayload
 } = require("../utils/public-route-cache");
 const {
-  buildEligibleCategoryDtos,
-  createMenuVersion,
   fetchHotelMenuCategories,
-  normalizeMenuCategoryKey,
-  resolveMenuItemDisplayImage
 } = require("../utils/menu-categories");
 const router = express.Router();
 const PUBLIC_ROUTE_CACHE_CONTROL = "public, max-age=30, stale-while-revalidate=120";
@@ -305,11 +312,26 @@ router.get("/menu/:slug", async (req, res) => {
       return;
     }
 
-    if (!(await ensureHotelFeatureEnabled(res, { featureKey: "food", hotelSlug: slug }))) {
+    const canonicalSlug = hotelAccess.slug;
+
+    if (env.tenantRuntimePublicMenuEnabled) {
+      const featureConfig = await fetchTenantPublicMenuFeature(
+        getTenantRequestScope(req),
+        canonicalSlug
+      );
+      if (!isHotelFeatureEnabled(featureConfig, HOTEL_FEATURE_KEYS.FOOD)) {
+        return res
+          .status(403)
+          .json(buildFeatureDisabledPayload(HOTEL_FEATURE_KEYS.FOOD));
+      }
+    } else if (!(await ensureHotelFeatureEnabled(
+      res,
+      { featureKey: "food", hotelSlug: canonicalSlug }
+    ))) {
       return;
     }
 
-    const cacheKey = `menu:${slug}`;
+    const cacheKey = `menu:${canonicalSlug}`;
     const cachedPayload = getCachedPublicRoutePayload(cacheKey);
 
     if (cachedPayload) {
@@ -317,92 +339,56 @@ router.get("/menu/:slug", async (req, res) => {
       return res.json(cachedPayload);
     }
 
-    const { data, error } = await supabase
-      .from("menu_items")
-      .select(PUBLIC_MENU_FIELDS)
-      .eq("hotel_slug", slug)
-      .eq("is_available", true)
-      .eq("is_archived", false)
-      .order("category", { ascending: true })
-      .order("sort_order", { ascending: true });
+    let menuItems;
+    let categoryResult;
+    let comboPresentationMap;
 
-    if (error) throw error;
+    if (env.tenantRuntimePublicMenuEnabled) {
+      const tenantResult = await fetchTenantPublicMenuData(
+        getTenantRequestScope(req),
+        canonicalSlug
+      );
+      menuItems = tenantResult.menuItems;
+      categoryResult = tenantResult.categoryResult;
+      comboPresentationMap = tenantResult.comboPresentationMap;
+    } else {
+      const { data, error } = await supabase
+        .from("menu_items")
+        .select(PUBLIC_MENU_FIELDS)
+        .eq("hotel_slug", canonicalSlug)
+        .eq("is_available", true)
+        .eq("is_archived", false)
+        .order("category", { ascending: true })
+        .order("sort_order", { ascending: true })
+        .order("item_id", { ascending: true });
 
-    const categoryResult = await fetchHotelMenuCategories({
-      supabase,
-      hotelSlug: slug,
-      consumer: "website",
-      menuItems: data || []
-    });
-    const categoryDtos = buildEligibleCategoryDtos(categoryResult.categories, data || [], {
-      hideEmpty: true
-    });
-    const categoryByKey = new Map(categoryDtos.map((category) => [category.key, category]));
-
-    let comboPresentationMap = new Map();
-
-    try {
-      comboPresentationMap = await fetchMenuComboPresentationMap({
-        hotelSlug: slug,
-        menuItems: data || []
+      if (error) throw error;
+      menuItems = data || [];
+      categoryResult = await fetchHotelMenuCategories({
+        supabase,
+        hotelSlug: canonicalSlug,
+        consumer: "website",
+        menuItems
       });
-    } catch (comboError) {
-      if (!isMissingMenuComboSchemaError(comboError)) {
-        throw comboError;
+      comboPresentationMap = new Map();
+
+      try {
+        comboPresentationMap = await fetchMenuComboPresentationMap({
+          hotelSlug: canonicalSlug,
+          menuItems
+        });
+      } catch (comboError) {
+        if (!isMissingMenuComboSchemaError(comboError)) {
+          throw comboError;
+        }
       }
     }
 
-    const groupedMenu = {};
-
-    for (const item of data || []) {
-      const category = normalizeMenuCategoryKey(item.category);
-      const categoryDto = categoryByKey.get(category);
-      if (!categoryDto) continue;
-      const displayImage = resolveMenuItemDisplayImage(item, categoryDto);
-      const comboPresentation = comboPresentationMap.get(item.item_id);
-      const isComboItem = String(item.item_type || "single").trim() === "combo";
-
-      if (isComboItem && !isMenuComboPresentationCurrentlyAvailable(comboPresentation)) {
-        continue;
-      }
-
-      if (!groupedMenu[category]) {
-        groupedMenu[category] = [];
-      }
-
-      groupedMenu[category].push({
-        id: item.item_id,
-        name: item.name,
-        desc: item.description || "",
-        price: Number(item.price || 0),
-        image: displayImage.url,
-        imageMeta: displayImage,
-        alt: item.alt || item.name || "",
-        badge: item.badge || (comboPresentation ? "Combo" : ""),
-        tag: item.tag || "",
-        itemType: comboPresentation?.itemType || item.item_type || "single",
-        comboItems: comboPresentation?.comboItems || [],
-        originalPrice: Number(comboPresentation?.originalPrice || 0),
-        savings: Number(comboPresentation?.savings || 0),
-        startDate: comboPresentation?.startDate || "",
-        endDate: comboPresentation?.endDate || "",
-        startTime: comboPresentation?.startTime || "",
-        endTime: comboPresentation?.endTime || ""
-      });
-    }
-    const visibleItems = Object.values(groupedMenu).flat();
-    const visibleCategories = categoryDtos.filter(
-      (category) => Array.isArray(groupedMenu[category.key]) && groupedMenu[category.key].length > 0
-    );
-    const menuVersion = createMenuVersion({ categories: visibleCategories, items: visibleItems });
-
-    const payload = {
-      success: true,
-      menuVersion,
-      categorySource: categoryResult.source,
-      categories: visibleCategories,
-      menu: groupedMenu
-    };
+    const payload = buildPublicMenuPayload({
+      menuItems,
+      categoryResult,
+      comboPresentationMap
+    });
 
     setCachedPublicRoutePayload(cacheKey, payload);
     res.set("Cache-Control", PUBLIC_ROUTE_CACHE_CONTROL);

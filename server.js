@@ -113,6 +113,9 @@ function getReadinessChecks() {
   const tenantPublicHotelReady =
     !env.tenantRuntimePublicHotelEnabled ||
     (env.tenantRuntimeEnabled && hasText(env.tenantDatabaseUrl));
+  const tenantPublicMenuReady =
+    !env.tenantRuntimePublicMenuEnabled ||
+    (env.tenantRuntimeEnabled && hasText(env.tenantDatabaseUrl));
 
   return [
     buildReadinessCheck(
@@ -169,6 +172,11 @@ function getReadinessChecks() {
       "tenant_runtime_public_hotel",
       tenantPublicHotelReady,
       "tenant_public_hotel_requires_tenant_runtime"
+    ),
+    buildReadinessCheck(
+      "tenant_runtime_public_menu",
+      tenantPublicMenuReady,
+      "tenant_public_menu_requires_tenant_runtime"
     )
   ];
 }

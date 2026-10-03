@@ -144,7 +144,13 @@ function isMissingMenuComboSchemaError(error) {
   );
 }
 
-async function fetchMenuComboPresentationMap({ hotelSlug, menuItems = [] }) {
+function buildMenuComboPresentationMap({
+  hotelSlug,
+  menuItems = [],
+  comboChildRows = [],
+  comboSettingsRows = [],
+  childMenuItems = []
+}) {
   const normalizedHotelSlug = String(hotelSlug || "").trim();
   const comboMenuItems = (Array.isArray(menuItems) ? menuItems : []).filter(
     (menuItem) => String(menuItem?.item_type || "single").trim() === "combo"
@@ -154,60 +160,12 @@ async function fetchMenuComboPresentationMap({ hotelSlug, menuItems = [] }) {
     return new Map();
   }
 
-  const comboItemIds = comboMenuItems
-    .map((menuItem) => String(menuItem?.item_id || "").trim())
-    .filter(Boolean);
-
-  const { data: comboChildRows, error: comboChildRowsError } = await supabase
-    .from("menu_combo_items")
-    .select("*")
-    .eq("hotel_slug", normalizedHotelSlug)
-    .in("combo_item_id", comboItemIds)
-    .order("sort_order", { ascending: true })
-    .order("id", { ascending: true });
-
-  if (comboChildRowsError) {
-    throw comboChildRowsError;
-  }
-
-  const { data: comboSettingsRows, error: comboSettingsRowsError } = await supabase
-    .from("menu_combo_settings")
-    .select("*")
-    .eq("hotel_slug", normalizedHotelSlug)
-    .in("combo_item_id", comboItemIds);
-
-  if (comboSettingsRowsError) {
-    throw comboSettingsRowsError;
-  }
-
-  const childItemIds = [
-    ...new Set(
-      (comboChildRows || [])
-        .map((comboChildRow) => String(comboChildRow?.child_item_id || "").trim())
-        .filter(Boolean)
-    )
-  ];
-
-  let childMenuItemMap = new Map();
-
-  if (childItemIds.length) {
-    const { data: childMenuItems, error: childMenuItemsError } = await supabase
-      .from("menu_items")
-      .select("hotel_slug,item_id,name,price,category,image,is_available")
-      .eq("hotel_slug", normalizedHotelSlug)
-      .in("item_id", childItemIds);
-
-    if (childMenuItemsError) {
-      throw childMenuItemsError;
-    }
-
-    childMenuItemMap = new Map(
-      (childMenuItems || []).map((childMenuItem) => [
-        getMenuComboLookupKey(childMenuItem.hotel_slug, childMenuItem.item_id),
-        childMenuItem
-      ])
-    );
-  }
+  const childMenuItemMap = new Map(
+    (Array.isArray(childMenuItems) ? childMenuItems : []).map((childMenuItem) => [
+      getMenuComboLookupKey(childMenuItem.hotel_slug, childMenuItem.item_id),
+      childMenuItem
+    ])
+  );
 
   const comboChildRowsByKey = (comboChildRows || []).reduce((accumulator, comboChildRow) => {
     const comboLookupKey = getMenuComboLookupKey(
@@ -267,6 +225,75 @@ async function fetchMenuComboPresentationMap({ hotelSlug, menuItems = [] }) {
     });
     return accumulator;
   }, new Map());
+}
+
+async function fetchMenuComboPresentationMap({ hotelSlug, menuItems = [] }) {
+  const normalizedHotelSlug = String(hotelSlug || "").trim();
+  const comboMenuItems = (Array.isArray(menuItems) ? menuItems : []).filter(
+    (menuItem) => String(menuItem?.item_type || "single").trim() === "combo"
+  );
+
+  if (!normalizedHotelSlug || !comboMenuItems.length) {
+    return new Map();
+  }
+
+  const comboItemIds = comboMenuItems
+    .map((menuItem) => String(menuItem?.item_id || "").trim())
+    .filter(Boolean);
+
+  const { data: comboChildRows, error: comboChildRowsError } = await supabase
+    .from("menu_combo_items")
+    .select("*")
+    .eq("hotel_slug", normalizedHotelSlug)
+    .in("combo_item_id", comboItemIds)
+    .order("sort_order", { ascending: true })
+    .order("id", { ascending: true });
+
+  if (comboChildRowsError) {
+    throw comboChildRowsError;
+  }
+
+  const { data: comboSettingsRows, error: comboSettingsRowsError } = await supabase
+    .from("menu_combo_settings")
+    .select("*")
+    .eq("hotel_slug", normalizedHotelSlug)
+    .in("combo_item_id", comboItemIds);
+
+  if (comboSettingsRowsError) {
+    throw comboSettingsRowsError;
+  }
+
+  const childItemIds = [
+    ...new Set(
+      (comboChildRows || [])
+        .map((comboChildRow) => String(comboChildRow?.child_item_id || "").trim())
+        .filter(Boolean)
+    )
+  ];
+
+  let childMenuItems = [];
+
+  if (childItemIds.length) {
+    const { data, error: childMenuItemsError } = await supabase
+      .from("menu_items")
+      .select("hotel_slug,item_id,name,price,category,image,is_available")
+      .eq("hotel_slug", normalizedHotelSlug)
+      .in("item_id", childItemIds);
+
+    if (childMenuItemsError) {
+      throw childMenuItemsError;
+    }
+
+    childMenuItems = data || [];
+  }
+
+  return buildMenuComboPresentationMap({
+    hotelSlug: normalizedHotelSlug,
+    menuItems,
+    comboChildRows: comboChildRows || [],
+    comboSettingsRows: comboSettingsRows || [],
+    childMenuItems
+  });
 }
 
 async function validateRequestedMenuCombos({
@@ -414,6 +441,7 @@ async function validateRequestedMenuCombos({
 }
 
 module.exports = {
+  buildMenuComboPresentationMap,
   fetchMenuComboPresentationMap,
   getMenuComboLookupKey,
   isMissingMenuComboSchemaError,
