@@ -125,6 +125,9 @@ function getReadinessChecks() {
   const tenantPublicPopupReady =
     !env.tenantRuntimePublicPopupEnabled ||
     (env.tenantRuntimeEnabled && hasText(env.tenantDatabaseUrl));
+  const tenantPublicRoomsReady =
+    !env.tenantRuntimePublicRoomsEnabled ||
+    (env.tenantRuntimeEnabled && hasText(env.tenantDatabaseUrl));
 
   return [
     buildReadinessCheck(
@@ -201,6 +204,11 @@ function getReadinessChecks() {
       "tenant_runtime_public_popup",
       tenantPublicPopupReady,
       "tenant_public_popup_requires_tenant_runtime"
+    ),
+    buildReadinessCheck(
+      "tenant_runtime_public_rooms",
+      tenantPublicRoomsReady,
+      "tenant_public_rooms_requires_tenant_runtime"
     )
   ];
 }

@@ -1,6 +1,8 @@
 const express = require("express");
 const { ZodError } = require("zod");
 const { ensurePublicHotelAccess } = require("../utils/public-hotel-access");
+const { env } = require("../config/env");
+const { getTenantRequestScope } = require("../utils/tenant-request-context");
 const { publicRoomBookingLimiter } = require("../middleware/public-rate-limiters");
 const { validateBody, formatZodError } = require("../validators/common");
 const {
@@ -15,6 +17,28 @@ const {
   setCachedPublicRoutePayload
 } = require("../utils/public-route-cache");
 const { ensureHotelFeatureEnabled } = require("../middleware/require-hotel-feature");
+const {
+  buildFeatureDisabledPayload,
+  isHotelFeatureEnabled
+} = require("../utils/hotel-feature-settings");
+const {
+  fetchTenantPublicRoomAvailability,
+  fetchTenantPublicRoomDetail,
+  fetchTenantPublicRoomDiscovery,
+  fetchTenantPublicRoomFeatureConfig,
+  fetchTenantPublicRooms
+} = require("../utils/tenant-public-rooms");
+const {
+  applyRoomDiscoverySort,
+  buildPagination,
+  combinePublicRoomImages,
+  firstLegacyImage,
+  getSafeArray,
+  mapManagedPublicImage,
+  mapPublicRoom,
+  mapSummaryImage,
+  normalizeText
+} = require("../utils/public-room-presentation");
 const {
   getRoomDefaultNightlyPrice,
   resolveRoomBookingPricing
@@ -36,12 +60,6 @@ const router = express.Router();
 const PUBLIC_ROOM_CACHE_CONTROL = "public, max-age=30, stale-while-revalidate=120";
 const PUBLIC_ROOM_LIVE_CACHE_CONTROL = "private, no-store";
 const PUBLIC_ROOM_DISCOVERY_SCAN_LIMIT = 500;
-
-function normalizeText(value = "", maxLength = 120) {
-  return typeof value === "string"
-    ? value.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, maxLength)
-    : "";
-}
 
 function isMissingRoomBookingSchemaError(error) {
   const code = String(error?.code || "").trim().toUpperCase();
@@ -79,77 +97,10 @@ function parseQuery(schema, query = {}) {
   }
 }
 
-function getSafeArray(value) {
-  return Array.isArray(value) ? value : [];
-}
-
 function isMissingRoomGallerySchemaError(error) {
   const code = String(error?.code || "").trim().toUpperCase();
   const details = `${error?.message || ""} ${error?.details || ""} ${error?.hint || ""}`.toLowerCase();
   return details.includes("room_images") && ["42P01", "42703", "PGRST204", "PGRST205"].includes(code);
-}
-
-function safePublicImageUrl(value = "") {
-  const url = normalizeText(value, 2048);
-  if (!url) return "";
-  if (url.startsWith("/") && !url.startsWith("//")) return url;
-  try {
-    const parsed = new URL(url);
-    return ["http:", "https:"].includes(parsed.protocol) ? parsed.href : "";
-  } catch (_error) {
-    return "";
-  }
-}
-
-function mapManagedPublicImage(row = {}, source = "room") {
-  const originalUrl = safePublicImageUrl(row.original_url);
-  const optimizedUrl = safePublicImageUrl(row.optimized_url) || originalUrl;
-  const cardUrl = safePublicImageUrl(row.card_url) || optimizedUrl;
-  const thumbnailUrl = safePublicImageUrl(row.thumbnail_url) || cardUrl;
-  if (!originalUrl) return null;
-  return {
-    id: Number(row.id), source, originalUrl, optimizedUrl, cardUrl, thumbnailUrl,
-    altText: normalizeText(row.alt_text, 240),
-    caption: normalizeText(row.caption, 500),
-    isPrimary: row.is_primary === true,
-    width: Number(row.width || 0), height: Number(row.height || 0)
-  };
-}
-
-function mapLegacyPublicImage(value, index, fallbackAlt) {
-  const objectValue = value && typeof value === "object" ? value : {};
-  const originalUrl = safePublicImageUrl(typeof value === "string"
-    ? value
-    : objectValue.originalUrl || objectValue.url || objectValue.src || objectValue.image_url);
-  if (!originalUrl) return null;
-  return {
-    id: `legacy-${index + 1}`, source: "legacy", originalUrl,
-    optimizedUrl: safePublicImageUrl(objectValue.optimizedUrl) || originalUrl,
-    cardUrl: safePublicImageUrl(objectValue.cardUrl) || originalUrl,
-    thumbnailUrl: safePublicImageUrl(objectValue.thumbnailUrl) || originalUrl,
-    altText: normalizeText(objectValue.altText || objectValue.alt || fallbackAlt, 240),
-    caption: normalizeText(objectValue.caption, 500),
-    isPrimary: index === 0,
-    width: Number(objectValue.width || 0), height: Number(objectValue.height || 0)
-  };
-}
-
-function combinePublicRoomImages(room, roomType, roomImages = [], roomTypeImages = []) {
-  const managed = [...roomImages, ...roomTypeImages].filter(Boolean);
-  if (managed.length) {
-    const primary = roomImages.find((image) => image.isPrimary) || roomImages[0] ||
-      roomTypeImages.find((image) => image.isPrimary) || roomTypeImages[0];
-    const seen = new Set();
-    return [primary, ...managed]
-      .filter((image) => image && !seen.has(image.originalUrl) && seen.add(image.originalUrl))
-      .map((image, index) => ({ ...image, isPrimary: index === 0 }));
-  }
-  const legacyValues = getSafeArray(room.images_json).length
-    ? getSafeArray(room.images_json)
-    : getSafeArray(roomType?.images_json);
-  return legacyValues
-    .map((value, index) => mapLegacyPublicImage(value, index, room.title || roomType?.name || `Room ${room.room_number || ""}`))
-    .filter(Boolean);
 }
 
 async function fetchManagedPublicRoomImages(hotelSlug, roomIds, roomTypeIds) {
@@ -202,11 +153,23 @@ function buildMissingSchemaResponse(res) {
   });
 }
 
-async function ensurePublicRoomBookingEnabled(res, hotelSlug = "") {
-  const featureConfig = await ensureHotelFeatureEnabled(res, {
-    featureKey: "rooms",
-    hotelSlug
-  });
+async function ensurePublicRoomBookingEnabled(res, hotelSlug = "", tenantScope = null) {
+  let featureConfig;
+  if (env.tenantRuntimePublicRoomsEnabled && tenantScope) {
+    featureConfig = await fetchTenantPublicRoomFeatureConfig(
+      tenantScope,
+      hotelSlug
+    );
+    if (!isHotelFeatureEnabled(featureConfig, "rooms")) {
+      res.status(403).json(buildFeatureDisabledPayload("rooms"));
+      return false;
+    }
+  } else {
+    featureConfig = await ensureHotelFeatureEnabled(res, {
+      featureKey: "rooms",
+      hotelSlug
+    });
+  }
 
   if (!featureConfig) {
     return false;
@@ -218,48 +181,6 @@ async function ensurePublicRoomBookingEnabled(res, hotelSlug = "") {
   }
 
   return true;
-}
-
-function mapPublicRoom(room = {}, roomType = null, galleryImages = []) {
-  const effectivePrice = getRoomDefaultNightlyPrice({ room, roomType }).amount;
-
-  return {
-    id: room.id,
-    hotelSlug: normalizeText(room.hotel_slug, 120),
-    roomTypeId: room.room_type_id || null,
-    roomType: roomType
-      ? {
-          id: roomType.id,
-          name: roomType.name || "",
-          description: roomType.description || "",
-          basePrice: Number(roomType.base_price || 0),
-          maxAdults: Number(roomType.max_adults || 0),
-          maxChildren: Number(roomType.max_children || 0),
-          amenities: getSafeArray(roomType.amenities_json),
-          images: getSafeArray(roomType.images_json),
-          cancellationPolicy: roomType.cancellation_policy || ""
-        }
-      : null,
-    roomNumber: room.room_number || "",
-    title: room.title || room.room_number || "",
-    floor: room.floor || "",
-    capacity: Number(room.capacity || 0),
-    maxAdults: Number(room.max_adults || 0),
-    maxChildren: Number(room.max_children || 0),
-    bedType: room.bed_type || "",
-    pricePerNight: Math.max(0, effectivePrice),
-    basePrice: Number(room.base_price || 0),
-    discountPrice:
-      room.discount_price === null || room.discount_price === undefined
-        ? null
-        : Number(room.discount_price || 0),
-    taxPercent: Number(room.tax_percent || 0),
-    amenities: getSafeArray(room.amenities_json),
-    images: getSafeArray(room.images_json),
-    galleryImages,
-    primaryImage: galleryImages[0] || null,
-    description: room.description || ""
-  };
 }
 
 function roundMoney(value = 0) {
@@ -394,32 +315,6 @@ async function fetchPublicRooms(hotelSlug = "", { adults = 0, children = 0 } = {
   });
 }
 
-function buildPagination(page, pageSize, totalItems) {
-  const total = Math.max(0, Number(totalItems || 0));
-  return {
-    page,
-    pageSize,
-    totalItems: total,
-    totalPages: total ? Math.ceil(total / pageSize) : 0,
-    hasMore: page * pageSize < total
-  };
-}
-
-function mapSummaryImage(image, fallbackAlt = "Room") {
-  if (!image) return null;
-  return {
-    cardUrl: image.cardUrl || image.optimizedUrl || image.originalUrl || "",
-    thumbnailUrl: image.thumbnailUrl || image.cardUrl || image.optimizedUrl || image.originalUrl || "",
-    alt: image.altText || fallbackAlt,
-    width: Number(image.width || 0) || 960,
-    height: Number(image.height || 0) || 640
-  };
-}
-
-function firstLegacyImage(values, fallbackAlt) {
-  return mapLegacyPublicImage(getSafeArray(values)[0], 0, fallbackAlt);
-}
-
 async function fetchPrimaryPublicImages(hotelSlug, roomIds = [], roomTypeIds = []) {
   const emptyResult = { data: [], error: null };
   const [roomResult, roomTypeResult] = await Promise.all([
@@ -465,14 +360,6 @@ async function fetchBlockedRoomIds({ hotelSlug, roomIds, checkInDate, checkOutDa
   maintenance.forEach((roomId) => blocked.add(String(roomId)));
   return blocked;
 }
-function applyRoomDiscoverySort(items, sort) {
-  const sorted = [...items];
-  if (sort === "price_asc") sorted.sort((a, b) => a.startingPrice - b.startingPrice || String(a.name).localeCompare(String(b.name)));
-  else if (sort === "price_desc") sorted.sort((a, b) => b.startingPrice - a.startingPrice || String(a.name).localeCompare(String(b.name)));
-  else if (sort === "capacity") sorted.sort((a, b) => b.capacity.adults - a.capacity.adults || String(a.name).localeCompare(String(b.name)));
-  return sorted;
-}
-
 async function fetchPublicRoomTypeDiscovery(hotelSlug, filters) {
   const { page, pageSize, search, adults = 0, children = 0, minPrice, maxPrice, amenity, sort, checkInDate, checkOutDate } = filters;
   let query = supabase
@@ -501,7 +388,9 @@ async function fetchPublicRoomTypeDiscovery(hotelSlug, filters) {
     .eq("hotel_slug", hotelSlug).eq("is_active", true).eq("status", "available").in("room_type_id", typeIds);
   if (adults > 0) roomQuery = roomQuery.gte("max_adults", adults);
   if (children > 0) roomQuery = roomQuery.gte("max_children", children);
-  const { data: rooms, error: roomsError } = await roomQuery.limit(PUBLIC_ROOM_DISCOVERY_SCAN_LIMIT);
+  const { data: rooms, error: roomsError } = await roomQuery
+    .order("id", { ascending: true })
+    .limit(PUBLIC_ROOM_DISCOVERY_SCAN_LIMIT);
   if (roomsError) throw roomsError;
   const roomIds = (rooms || []).map((room) => room.id);
   const [blockedRoomIds, images] = await Promise.all([
@@ -681,10 +570,12 @@ router.get("/:slug/discovery", async (req, res) => {
       forbiddenMessage: "This hotel room discovery is not available for the current origin"
     });
     if (!hotelAccess) return;
-    if (!(await ensurePublicRoomBookingEnabled(res, slug))) return;
+    const canonicalSlug = hotelAccess.slug;
+    const tenantScope = getTenantRequestScope(req);
+    if (!(await ensurePublicRoomBookingEnabled(res, canonicalSlug, tenantScope))) return;
     const filters = parsedQuery.values;
     const hasLiveAvailability = Boolean(filters.checkInDate && filters.checkOutDate);
-    const cacheKey = `rooms:${slug}:discovery:${JSON.stringify(filters)}`;
+    const cacheKey = `rooms:${canonicalSlug}:discovery:${JSON.stringify(filters)}`;
     if (!hasLiveAvailability) {
       const cached = getCachedPublicRoutePayload(cacheKey);
       if (cached) {
@@ -692,12 +583,14 @@ router.get("/:slug/discovery", async (req, res) => {
         return res.json(cached);
       }
     }
-    const result = filters.mode === "rooms"
-      ? await fetchPublicRoomDiscovery(slug, filters)
-      : await fetchPublicRoomTypeDiscovery(slug, filters);
+    const result = env.tenantRuntimePublicRoomsEnabled
+      ? await fetchTenantPublicRoomDiscovery(tenantScope, canonicalSlug, filters)
+      : filters.mode === "rooms"
+        ? await fetchPublicRoomDiscovery(canonicalSlug, filters)
+        : await fetchPublicRoomTypeDiscovery(canonicalSlug, filters);
     const payload = {
       success: true,
-      hotelSlug: slug,
+      hotelSlug: canonicalSlug,
       mode: filters.mode,
       authoritativeAvailability: hasLiveAvailability,
       query: {
@@ -735,11 +628,15 @@ router.get("/:slug/rooms/:roomId", async (req, res) => {
       forbiddenMessage: "This hotel room is not available for the current origin"
     });
     if (!hotelAccess) return;
-    if (!(await ensurePublicRoomBookingEnabled(res, slug))) return;
-    const room = await fetchPublicRoomDetail(slug, roomId);
+    const canonicalSlug = hotelAccess.slug;
+    const tenantScope = getTenantRequestScope(req);
+    if (!(await ensurePublicRoomBookingEnabled(res, canonicalSlug, tenantScope))) return;
+    const room = env.tenantRuntimePublicRoomsEnabled
+      ? await fetchTenantPublicRoomDetail(tenantScope, canonicalSlug, roomId)
+      : await fetchPublicRoomDetail(canonicalSlug, roomId);
     if (!room) return res.status(404).json({ success: false, message: "Room is not publicly available" });
     res.set("Cache-Control", PUBLIC_ROOM_CACHE_CONTROL);
-    return res.json({ success: true, hotelSlug: slug, room });
+    return res.json({ success: true, hotelSlug: canonicalSlug, room });
   } catch (error) {
     if (isMissingRoomBookingSchemaError(error)) return buildMissingSchemaResponse(res);
     console.error("Public room detail error:", error);
@@ -758,16 +655,20 @@ router.get("/:slug", async (req, res) => {
       return;
     }
 
-    if (!(await ensurePublicRoomBookingEnabled(res, slug))) {
+    const canonicalSlug = hotelAccess.slug;
+    const tenantScope = getTenantRequestScope(req);
+    if (!(await ensurePublicRoomBookingEnabled(res, canonicalSlug, tenantScope))) {
       return;
     }
 
-    const rooms = await fetchPublicRooms(slug);
+    const rooms = env.tenantRuntimePublicRoomsEnabled
+      ? await fetchTenantPublicRooms(tenantScope, canonicalSlug)
+      : await fetchPublicRooms(canonicalSlug);
 
     res.set("Cache-Control", PUBLIC_ROOM_CACHE_CONTROL);
     res.json({
       success: true,
-      hotelSlug: slug,
+      hotelSlug: canonicalSlug,
       count: rooms.length,
       rooms
     });
@@ -806,7 +707,9 @@ router.get("/:slug/availability", async (req, res) => {
       return;
     }
 
-    if (!(await ensurePublicRoomBookingEnabled(res, slug))) {
+    const canonicalSlug = hotelAccess.slug;
+    const tenantScope = getTenantRequestScope(req);
+    if (!(await ensurePublicRoomBookingEnabled(res, canonicalSlug, tenantScope))) {
       return;
     }
 
@@ -816,14 +719,31 @@ router.get("/:slug/availability", async (req, res) => {
       adults = 0,
       children = 0
     } = parsedQuery.values;
-    const rooms = await fetchPublicRooms(slug, { adults, children });
+    if (env.tenantRuntimePublicRoomsEnabled) {
+      const rooms = await fetchTenantPublicRoomAvailability(
+        tenantScope,
+        canonicalSlug,
+        { checkInDate, checkOutDate, adults, children }
+      );
+      res.set("Cache-Control", PUBLIC_ROOM_LIVE_CACHE_CONTROL);
+      return res.json({
+        success: true,
+        hotelSlug: canonicalSlug,
+        checkInDate,
+        checkOutDate,
+        count: rooms.length,
+        rooms
+      });
+    }
+
+    const rooms = await fetchPublicRooms(canonicalSlug, { adults, children });
     const roomIds = rooms.map((room) => room.id);
 
     if (!roomIds.length) {
       res.set("Cache-Control", PUBLIC_ROOM_LIVE_CACHE_CONTROL);
       return res.json({
         success: true,
-        hotelSlug: slug,
+        hotelSlug: canonicalSlug,
         checkInDate,
         checkOutDate,
         count: 0,
@@ -835,7 +755,7 @@ router.get("/:slug/availability", async (req, res) => {
       supabase
         .from("room_bookings")
         .select("room_id")
-        .eq("hotel_slug", slug)
+        .eq("hotel_slug", canonicalSlug)
         .in("room_id", roomIds),
       { checkInDate, checkOutDate }
     );
@@ -849,7 +769,7 @@ router.get("/:slug/availability", async (req, res) => {
     );
     const maintenanceBlockedRoomIds = await fetchMaintenanceBlockedRoomIds({
       supabaseClient: supabase,
-      hotelSlug: slug,
+      hotelSlug: canonicalSlug,
       roomIds,
       checkInDate,
       checkOutDate
@@ -862,7 +782,7 @@ router.get("/:slug/availability", async (req, res) => {
     res.set("Cache-Control", PUBLIC_ROOM_LIVE_CACHE_CONTROL);
     res.json({
       success: true,
-      hotelSlug: slug,
+      hotelSlug: canonicalSlug,
       checkInDate,
       checkOutDate,
       count: dateAvailableRooms.length,

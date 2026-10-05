@@ -30,6 +30,8 @@ port: Number(getEnv("PORT", "10000")),
     getEnv("TENANT_RUNTIME_PUBLIC_TESTIMONIALS_ENABLED", "false") === "true",
   tenantRuntimePublicPopupEnabled:
     getEnv("TENANT_RUNTIME_PUBLIC_POPUP_ENABLED", "false") === "true",
+  tenantRuntimePublicRoomsEnabled:
+    getEnv("TENANT_RUNTIME_PUBLIC_ROOMS_ENABLED", "false") === "true",
   tenantDatabaseUrl: getEnv("TENANT_DATABASE_URL", ""),
   tenantDatabasePoolMax: Number(getEnv("TENANT_DATABASE_POOL_MAX", "10")),
   tenantDatabaseIdleTimeoutMs: Number(
