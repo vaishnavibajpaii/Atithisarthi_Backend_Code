@@ -169,7 +169,11 @@ publicContracts.forEach((file) => {
 
 const orderTrackingRoute = read("backend/routes/order-tracking.js");
 assert(orderTrackingRoute.includes("requirePublicFoodModule"));
-assert(orderTrackingRoute.includes('router.get("/:hotelSlug/:orderId", trackingViewLimiter, requirePublicFoodModule'));
+assert(orderTrackingRoute.includes("requirePublicFoodTrackingRead"));
+assert(orderTrackingRoute.includes("env.tenantRuntimePublicOrderTrackingEnabled"));
+assert(orderTrackingRoute.includes('router.get("/:hotelSlug/:orderId", trackingViewLimiter, requirePublicFoodTrackingRead'));
+assert(orderTrackingRoute.includes('router.post("/:hotelSlug/:orderId/support-requests", trackingSupportLimiter, requirePublicFoodModule'));
+assert(orderTrackingRoute.includes('router.post("/:hotelSlug/:orderId/add-items", requirePublicFoodModule'));
 
 const staffHtml = read("frontend/staff-orders.html");
 [

@@ -132,6 +132,9 @@ function getReadinessChecks() {
   const tenantPublicRoomsReady =
     !env.tenantRuntimePublicRoomsEnabled ||
     (env.tenantRuntimeEnabled && hasText(env.tenantDatabaseUrl));
+  const tenantPublicOrderTrackingReady =
+    !env.tenantRuntimePublicOrderTrackingEnabled ||
+    (env.tenantRuntimeEnabled && hasText(env.tenantDatabaseUrl));
 
   return [
     buildReadinessCheck(
@@ -220,6 +223,12 @@ function getReadinessChecks() {
       tenantPublicRoomsReady,
       "tenant_public_rooms_requires_tenant_runtime",
       env.tenantRuntimePublicRoomsEnabled
+    ),
+    buildReadinessCheck(
+      "tenant_runtime_public_order_tracking",
+      tenantPublicOrderTrackingReady,
+      "tenant_public_order_tracking_requires_tenant_runtime",
+      env.tenantRuntimePublicOrderTrackingEnabled
     )
   ];
 }

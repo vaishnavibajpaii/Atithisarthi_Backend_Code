@@ -1,12 +1,23 @@
 const express = require("express");
 const rateLimit = require("express-rate-limit");
 const { supabase } = require("../utils/supabase");
+const { env } = require("../config/env");
+const { ensurePublicHotelAccess } = require("../utils/public-hotel-access");
+const { getTenantRequestScope } = require("../utils/tenant-request-context");
+const {
+  fetchTenantPublicOrderTrackingBundle
+} = require("../utils/tenant-public-order-tracking");
 const {
   buildOrderTrackingReference,
   getOrderTrackingColumns,
   isMissingOrderTrackingColumnsError
 } = require("../utils/order-tracking");
 const { createNotificationEventSafely } = require("../utils/notifications");
+const {
+  buildFeatureDisabledPayload,
+  isHotelFeatureEnabled,
+  normalizeHotelSlug
+} = require("../utils/hotel-feature-settings");
 const {
   buildCustomerOrderingDisabledPayload,
   fetchHotelOrderingSettings
@@ -24,6 +35,13 @@ const TRACKING_ROUTE_WINDOW_MS = 10 * 60 * 1000;
 const requirePublicFoodModule = requireHotelFeature("food", {
   resolveHotelSlug: (req = {}) => req.params?.hotelSlug
 });
+
+function requirePublicFoodTrackingRead(req, res, next) {
+  if (env.tenantRuntimePublicOrderTrackingEnabled) {
+    return next();
+  }
+  return requirePublicFoodModule(req, res, next);
+}
 
 function getTrackingRateLimitKey(req = {}) {
   const hotelSlug = String(req.params?.hotelSlug || "").trim().toLowerCase();
@@ -1110,7 +1128,7 @@ router.post("/:hotelSlug/:orderId/add-items", requirePublicFoodModule, async (re
   }
 });
 
-router.get("/:hotelSlug/:orderId", trackingViewLimiter, requirePublicFoodModule, async (req, res) => {
+router.get("/:hotelSlug/:orderId", trackingViewLimiter, requirePublicFoodTrackingRead, async (req, res) => {
   try {
     const hotelSlug = normalizePublicText(req.params.hotelSlug, 120);
     const orderId = normalizePublicText(req.params.orderId, 120);
@@ -1123,23 +1141,66 @@ router.get("/:hotelSlug/:orderId", trackingViewLimiter, requirePublicFoodModule,
       });
     }
 
-    let { data, error } = await fetchTrackedOrder({
-      hotelSlug,
-      orderId,
-      token,
-      selectColumns: TRACKING_SELECT_FULL
-    });
+    let data;
+    let error;
+    let ownerWhatsAppNumber;
+    let addOns;
 
-    if (error && isMissingPublicOptionalColumnError(error) && !isMissingOrderTrackingColumnsError(error)) {
-      const fallbackResult = await fetchTrackedOrder({
+    if (env.tenantRuntimePublicOrderTrackingEnabled) {
+      const hotelAccess = await ensurePublicHotelAccess(
+        req,
+        res,
+        hotelSlug,
+        {
+          notFoundMessage: "Order tracking link is invalid or expired",
+          forbiddenMessage: "Order tracking is not available for the current origin"
+        }
+      );
+      if (!hotelAccess) return;
+
+      const canonicalSlug = normalizeHotelSlug(hotelAccess.slug);
+      const bundle = await fetchTenantPublicOrderTrackingBundle(
+        getTenantRequestScope(req),
+        canonicalSlug,
+        {
+          orderId,
+          trackingToken: token
+        }
+      );
+      if (!isHotelFeatureEnabled(bundle.featureConfig, "food")) {
+        return res.status(403).json(buildFeatureDisabledPayload("food"));
+      }
+
+      data = bundle.order;
+      ownerWhatsAppNumber = cleanPhone(
+        bundle.ownerWhatsAppNumber ||
+        process.env.OWNER_WHATSAPP_NUMBER ||
+        ""
+      );
+      addOns = data && hasDineInTrackingContext(data)
+        ? bundle.addOns
+        : [];
+    } else {
+      const trackedResult = await fetchTrackedOrder({
         hotelSlug,
         orderId,
         token,
-        selectColumns: TRACKING_SELECT_CORE
+        selectColumns: TRACKING_SELECT_FULL
       });
+      data = trackedResult.data;
+      error = trackedResult.error;
 
-      data = fallbackResult.data;
-      error = fallbackResult.error;
+      if (error && isMissingPublicOptionalColumnError(error) && !isMissingOrderTrackingColumnsError(error)) {
+        const fallbackResult = await fetchTrackedOrder({
+          hotelSlug,
+          orderId,
+          token,
+          selectColumns: TRACKING_SELECT_CORE
+        });
+
+        data = fallbackResult.data;
+        error = fallbackResult.error;
+      }
     }
 
     if (error) {
@@ -1160,8 +1221,10 @@ router.get("/:hotelSlug/:orderId", trackingViewLimiter, requirePublicFoodModule,
       });
     }
 
-    const ownerWhatsAppNumber = await getOwnerWhatsAppNumber(data.hotel_slug || hotelSlug);
-    const addOns = await fetchPublicAddonOrders(data);
+    if (!env.tenantRuntimePublicOrderTrackingEnabled) {
+      ownerWhatsAppNumber = await getOwnerWhatsAppNumber(data.hotel_slug || hotelSlug);
+      addOns = await fetchPublicAddonOrders(data);
+    }
 
     res.json({
       success: true,
