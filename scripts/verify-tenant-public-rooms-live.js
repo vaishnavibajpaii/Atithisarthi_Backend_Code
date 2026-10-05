@@ -5,7 +5,7 @@ require("dotenv").config({ quiet: true });
 const {
   normalizeBaseUrl,
   normalizeSlug,
-  requireReadyCheck
+  requireEnabledReadyCheck
 } = require("./verify-tenant-public-hotel-live");
 const {
   hasInternalContext,
@@ -182,7 +182,7 @@ async function main() {
     "tenant_runtime_public_testimonials",
     "tenant_runtime_public_popup",
     "tenant_runtime_public_rooms"
-  ].forEach((name) => requireReadyCheck(readiness, name));
+  ].forEach((name) => requireEnabledReadyCheck(readiness, name));
   const tenantASuite = await probeTenant(inputs.baseUrl, inputs.contextA, dates);
   const tenantBSuite = await probeTenant(inputs.baseUrl, inputs.contextB, dates);
   const unknown = await requestJson(`${inputs.baseUrl}/api/public/rooms/task3e-property-does-not-exist`);

@@ -77,12 +77,16 @@ function isLocalUrl(value = "") {
   }
 }
 
-function buildReadinessCheck(name, ready, issue = "") {
-  return {
+function buildReadinessCheck(name, ready, issue = "", enabled) {
+  const check = {
     name,
     ready: !!ready,
     issue: ready ? "" : issue
   };
+  if (typeof enabled === "boolean") {
+    check.enabled = enabled;
+  }
+  return check;
 }
 
 function getReadinessChecks() {
@@ -178,37 +182,44 @@ function getReadinessChecks() {
     buildReadinessCheck(
       "tenant_runtime_database",
       tenantRuntimeReady,
-      "missing_tenant_database_url"
+      "missing_tenant_database_url",
+      env.tenantRuntimeEnabled
     ),
     buildReadinessCheck(
       "tenant_runtime_public_hotel",
       tenantPublicHotelReady,
-      "tenant_public_hotel_requires_tenant_runtime"
+      "tenant_public_hotel_requires_tenant_runtime",
+      env.tenantRuntimePublicHotelEnabled
     ),
     buildReadinessCheck(
       "tenant_runtime_public_menu",
       tenantPublicMenuReady,
-      "tenant_public_menu_requires_tenant_runtime"
+      "tenant_public_menu_requires_tenant_runtime",
+      env.tenantRuntimePublicMenuEnabled
     ),
     buildReadinessCheck(
       "tenant_runtime_public_gallery",
       tenantPublicGalleryReady,
-      "tenant_public_gallery_requires_tenant_runtime"
+      "tenant_public_gallery_requires_tenant_runtime",
+      env.tenantRuntimePublicGalleryEnabled
     ),
     buildReadinessCheck(
       "tenant_runtime_public_testimonials",
       tenantPublicTestimonialsReady,
-      "tenant_public_testimonials_requires_tenant_runtime"
+      "tenant_public_testimonials_requires_tenant_runtime",
+      env.tenantRuntimePublicTestimonialsEnabled
     ),
     buildReadinessCheck(
       "tenant_runtime_public_popup",
       tenantPublicPopupReady,
-      "tenant_public_popup_requires_tenant_runtime"
+      "tenant_public_popup_requires_tenant_runtime",
+      env.tenantRuntimePublicPopupEnabled
     ),
     buildReadinessCheck(
       "tenant_runtime_public_rooms",
       tenantPublicRoomsReady,
-      "tenant_public_rooms_requires_tenant_runtime"
+      "tenant_public_rooms_requires_tenant_runtime",
+      env.tenantRuntimePublicRoomsEnabled
     )
   ];
 }

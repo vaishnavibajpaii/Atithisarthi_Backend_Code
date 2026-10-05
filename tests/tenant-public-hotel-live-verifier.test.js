@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const {
   normalizeBaseUrl,
   normalizeSlug,
+  requireEnabledReadyCheck,
   requireReadyCheck,
   verifyHotel
 } = require("../scripts/verify-tenant-public-hotel-live");
@@ -61,6 +62,23 @@ test("live verifier requires explicit tenant readiness checks", () => {
       "tenant_runtime_public_hotel"
     ),
     { code: "TASK3_PUBLIC_LIVE_READINESS_FAILED" }
+  );
+});
+
+test("live verifier requires tenant runtime checks to be explicitly enabled", () => {
+  assert.equal(
+    requireEnabledReadyCheck(
+      { body: { checks: [{ name: "tenant_runtime_database", ready: true, enabled: true }] } },
+      "tenant_runtime_database"
+    ),
+    true
+  );
+  assert.throws(
+    () => requireEnabledReadyCheck(
+      { body: { checks: [{ name: "tenant_runtime_database", ready: true, enabled: false }] } },
+      "tenant_runtime_database"
+    ),
+    { code: "TASK3_PUBLIC_LIVE_RUNTIME_DISABLED" }
   );
 });
 

@@ -132,6 +132,18 @@ function requireReadyCheck(readiness, name) {
   return true;
 }
 
+function requireEnabledReadyCheck(readiness, name) {
+  requireReadyCheck(readiness, name);
+  const check = readiness.body.checks.find((entry) => entry?.name === name);
+  if (check.enabled !== true) {
+    throw createVerifierError(
+      "TASK3_PUBLIC_LIVE_RUNTIME_DISABLED",
+      `Readiness check ${name} is healthy but its tenant-runtime path is not enabled`
+    );
+  }
+  return true;
+}
+
 function verifyHotel(result, expectedSlug) {
   if (
     result.status !== 200 ||
@@ -209,8 +221,8 @@ async function main() {
       "Backend readiness endpoint is not ready"
     );
   }
-  requireReadyCheck(readiness, "tenant_runtime_database");
-  requireReadyCheck(readiness, "tenant_runtime_public_hotel");
+  requireEnabledReadyCheck(readiness, "tenant_runtime_database");
+  requireEnabledReadyCheck(readiness, "tenant_runtime_public_hotel");
 
   const tenantA = await probeHotel(inputs.baseUrl, inputs.contextA);
   const tenantB = await probeHotel(inputs.baseUrl, inputs.contextB);
@@ -277,6 +289,7 @@ if (require.main === module) {
 module.exports = {
   normalizeBaseUrl,
   normalizeSlug,
+  requireEnabledReadyCheck,
   requireReadyCheck,
   verifyHotel
 };
