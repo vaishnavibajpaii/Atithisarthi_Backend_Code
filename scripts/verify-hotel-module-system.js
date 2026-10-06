@@ -121,7 +121,9 @@ assert(baseRoomSchema.includes("hotel_feature_setting_audit"), "Fresh installs m
 
 const staffRoute = read("backend/routes/staff.js");
 [
-  'router.get("/menu", requireStaffAuth, requireStaffFoodModule',
+  'attachStaffMenuTenantContext',
+  'requireStaffMenuFoodModule',
+  'fetchTenantStaffMenuBundle',
   'router.get("/kds/orders", requireStaffAuth, requireStaffFoodModule',
   'router.post("/orders", requireStaffAuth, requireStaffFoodModule',
   'router.post("/room-service-orders", requireStaffAuth, requireStaffRoomService',

@@ -135,6 +135,9 @@ function getReadinessChecks() {
   const tenantPublicOrderTrackingReady =
     !env.tenantRuntimePublicOrderTrackingEnabled ||
     (env.tenantRuntimeEnabled && hasText(env.tenantDatabaseUrl));
+  const tenantStaffMenuReady =
+    !env.tenantRuntimeStaffMenuEnabled ||
+    (env.tenantRuntimeEnabled && hasText(env.tenantDatabaseUrl));
 
   return [
     buildReadinessCheck(
@@ -229,6 +232,12 @@ function getReadinessChecks() {
       tenantPublicOrderTrackingReady,
       "tenant_public_order_tracking_requires_tenant_runtime",
       env.tenantRuntimePublicOrderTrackingEnabled
+    ),
+    buildReadinessCheck(
+      "tenant_runtime_staff_menu",
+      tenantStaffMenuReady,
+      "tenant_staff_menu_requires_tenant_runtime",
+      env.tenantRuntimeStaffMenuEnabled
     )
   ];
 }

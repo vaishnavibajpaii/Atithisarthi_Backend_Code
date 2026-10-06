@@ -1,6 +1,7 @@
 ﻿const express = require("express");
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
+const { env } = require("../config/env");
 const logger = require("../utils/logger");
 const { timeDatabaseCall } = require("../utils/request-timing");
 const { supabase } = require("../utils/supabase");
@@ -62,18 +63,25 @@ const {
 } = require("../utils/order-item-snapshots");
 const {
   fetchMenuComboPresentationMap,
-  isMenuComboPresentationCurrentlyAvailable,
   isMissingMenuComboSchemaError,
   validateRequestedMenuCombos
 } = require("../utils/menu-combos");
 const {
-  buildEligibleCategoryDtos,
-  createMenuVersion,
   fetchHotelMenuCategories,
-  filterEligibleMenuItems,
-  normalizeMenuCategoryKey,
-  resolveMenuItemDisplayImage
+  filterEligibleMenuItems
 } = require("../utils/menu-categories");
+const {
+  buildStaffMenuPayload
+} = require("../utils/staff-menu-presentation");
+const {
+  attachCanonicalStaffTenantContext
+} = require("../utils/tenant-staff-context");
+const {
+  getTenantRequestScope
+} = require("../utils/tenant-request-context");
+const {
+  fetchTenantStaffMenuBundle
+} = require("../utils/tenant-staff-menu");
 const {
   buildStaffOrderingDisabledPayload,
   fetchHotelOrderingSettings,
@@ -99,6 +107,26 @@ router.use(staffTablesRouter);
 const requireStaffFoodModule = requireHotelFeature("food", {
   resolveHotelSlug: resolveStaffHotelSlug
 });
+async function attachStaffMenuTenantContext(req, res, next) {
+  if (!env.tenantRuntimeStaffMenuEnabled) return next();
+  try {
+    const hotel = await attachCanonicalStaffTenantContext(req);
+    if (!hotel) {
+      return res.status(403).json({
+        success: false,
+        code: "HOTEL_SCOPE_REQUIRED",
+        message: "Staff hotel scope is not mapped to a tenant"
+      });
+    }
+    return next();
+  } catch (error) {
+    return next(error);
+  }
+}
+function requireStaffMenuFoodModule(req, res, next) {
+  if (env.tenantRuntimeStaffMenuEnabled) return next();
+  return requireStaffFoodModule(req, res, next);
+}
 const requireStaffRoomService = requireHotelFeature("room_service", {
   resolveHotelSlug: resolveStaffHotelSlug
 });
@@ -2685,46 +2713,6 @@ function getStaffKdsStatusCounts(orders = []) {
   }, {});
 }
 
-function buildStaffMenuItemResponse(item = {}, comboPresentation = null, category = null) {
-  const displayImage = resolveMenuItemDisplayImage(item, category);
-  return {
-    id: item.item_id || "",
-    name: item.name || "",
-    desc: item.description || "",
-    price: Number(item.price || 0),
-    image: displayImage.url,
-    imageMeta: displayImage,
-    alt: item.alt || item.name || "",
-    badge: item.badge || (comboPresentation ? "Combo" : ""),
-    tag: item.tag || "",
-    category: normalizeMenuCategoryKey(item.category),
-    categoryName: category?.name || normalizeMenuCategoryKey(item.category),
-    categorySlug: category?.slug || "",
-    sortOrder: Number(item.sort_order || 0),
-    itemType: comboPresentation?.itemType || item.item_type || "single",
-    comboItems: comboPresentation?.comboItems || [],
-    originalPrice: Number(comboPresentation?.originalPrice || 0),
-    savings: Number(comboPresentation?.savings || 0),
-    startDate: comboPresentation?.startDate || "",
-    endDate: comboPresentation?.endDate || "",
-    startTime: comboPresentation?.startTime || "",
-    endTime: comboPresentation?.endTime || ""
-  };
-}
-
-function groupStaffMenuItemsByCategory(items = []) {
-  return items.reduce((groupedMenu, item) => {
-    const category = item.category || "others";
-
-    if (!groupedMenu[category]) {
-      groupedMenu[category] = [];
-    }
-
-    groupedMenu[category].push(item);
-    return groupedMenu;
-  }, {});
-}
-
 function buildStaffReservationResponse(reservation = {}) {
   return {
     id: reservation.id,
@@ -2948,7 +2936,12 @@ router.post("/login", validateBody(staffLoginSchema), async (req, res) => {
   }
 });
 
-router.get("/menu", requireStaffAuth, requireStaffFoodModule, async (req, res) => {
+router.get(
+  "/menu",
+  requireStaffAuth,
+  attachStaffMenuTenantContext,
+  requireStaffMenuFoodModule,
+  async (req, res) => {
   try {
     const hotelSlug = String(req.staffHotelSlug || "").trim();
 
@@ -2959,76 +2952,58 @@ router.get("/menu", requireStaffAuth, requireStaffFoodModule, async (req, res) =
       });
     }
 
-    const { data, error } = await supabase
-      .from("menu_items")
-      .select(STAFF_MENU_FIELDS)
-      .eq("hotel_slug", hotelSlug)
-      .eq("is_available", true)
-      .eq("is_archived", false)
-      .order("category", { ascending: true })
-      .order("sort_order", { ascending: true });
-
-    if (error) throw error;
-
-    const categoryResult = await fetchHotelMenuCategories({
-      supabase,
-      hotelSlug,
-      consumer: "staff",
-      menuItems: data || []
-    });
-    const categoryDtos = buildEligibleCategoryDtos(categoryResult.categories, data || [], { hideEmpty: true });
-    const categoryByKey = new Map(categoryDtos.map((category) => [category.key, category]));
-    const categoryOrder = new Map(categoryDtos.map((category, index) => [category.key, index]));
-
+    let menuItems;
+    let categoryResult;
     let comboPresentationMap = new Map();
-
-    try {
-      comboPresentationMap = await fetchMenuComboPresentationMap({
+    if (env.tenantRuntimeStaffMenuEnabled) {
+      const tenantResult = await fetchTenantStaffMenuBundle(
+        getTenantRequestScope(req),
+        hotelSlug
+      );
+      if (!isHotelFeatureEnabled(tenantResult.featureConfig, "food")) {
+        return res
+          .status(403)
+          .json(buildFeatureDisabledPayload("food"));
+      }
+      menuItems = tenantResult.menuItems;
+      categoryResult = tenantResult.categoryResult;
+      comboPresentationMap = tenantResult.comboPresentationMap;
+    } else {
+      const { data, error } = await supabase
+        .from("menu_items")
+        .select(STAFF_MENU_FIELDS)
+        .eq("hotel_slug", hotelSlug)
+        .eq("is_available", true)
+        .eq("is_archived", false)
+        .order("category", { ascending: true })
+        .order("sort_order", { ascending: true });
+      if (error) throw error;
+      menuItems = data || [];
+      categoryResult = await fetchHotelMenuCategories({
+        supabase,
         hotelSlug,
-        menuItems: data || []
+        consumer: "staff",
+        menuItems
       });
-    } catch (comboError) {
-      if (!isMissingMenuComboSchemaError(comboError)) {
-        throw comboError;
+      try {
+        comboPresentationMap = await fetchMenuComboPresentationMap({
+          hotelSlug,
+          menuItems
+        });
+      } catch (comboError) {
+        if (!isMissingMenuComboSchemaError(comboError)) {
+          throw comboError;
+        }
       }
     }
-
-    const items = (data || [])
-      .filter((item) => {
-        if (!categoryByKey.has(normalizeMenuCategoryKey(item.category))) return false;
-        const comboPresentation = comboPresentationMap.get(item.item_id) || null;
-        const isComboItem = String(item.item_type || "single").trim() === "combo";
-
-        if (!isComboItem) {
-          return true;
-        }
-
-        return isMenuComboPresentationCurrentlyAvailable(comboPresentation);
-      })
-      .map((item) => buildStaffMenuItemResponse(
-        item,
-        comboPresentationMap.get(item.item_id) || null,
-        categoryByKey.get(normalizeMenuCategoryKey(item.category))
-      ))
-      .sort((left, right) =>
-        Number(categoryOrder.get(left.category) || 0) - Number(categoryOrder.get(right.category) || 0) ||
-        Number(left.sortOrder || 0) - Number(right.sortOrder || 0) ||
-        String(left.id).localeCompare(String(right.id))
-      );
-
-    const visibleCategories = categoryDtos.filter((category) => items.some((item) => item.category === category.key));
-    const menuVersion = createMenuVersion({ categories: visibleCategories, items });
-    res.set("Cache-Control", "private, no-cache");
-    res.json({
-      success: true,
+    const payload = buildStaffMenuPayload({
       hotelSlug,
-      count: items.length,
-      menuVersion,
-      categorySource: categoryResult.source,
-      categories: visibleCategories,
-      items,
-      menu: groupStaffMenuItemsByCategory(items)
+      menuItems,
+      categoryResult,
+      comboPresentationMap
     });
+    res.set("Cache-Control", "private, no-cache");
+    res.json(payload);
   } catch (error) {
     console.error("Staff menu fetch error:", error);
     res.status(500).json({
