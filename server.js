@@ -138,6 +138,9 @@ function getReadinessChecks() {
   const tenantStaffMenuReady =
     !env.tenantRuntimeStaffMenuEnabled ||
     (env.tenantRuntimeEnabled && hasText(env.tenantDatabaseUrl));
+  const tenantStaffOrderingSettingsReady =
+    !env.tenantRuntimeStaffOrderingSettingsEnabled ||
+    (env.tenantRuntimeEnabled && hasText(env.tenantDatabaseUrl));
 
   return [
     buildReadinessCheck(
@@ -238,6 +241,12 @@ function getReadinessChecks() {
       tenantStaffMenuReady,
       "tenant_staff_menu_requires_tenant_runtime",
       env.tenantRuntimeStaffMenuEnabled
+    ),
+    buildReadinessCheck(
+      "tenant_runtime_staff_ordering_settings",
+      tenantStaffOrderingSettingsReady,
+      "tenant_staff_ordering_settings_requires_tenant_runtime",
+      env.tenantRuntimeStaffOrderingSettingsEnabled
     )
   ];
 }

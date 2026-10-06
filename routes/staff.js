@@ -74,6 +74,9 @@ const {
   buildStaffMenuPayload
 } = require("../utils/staff-menu-presentation");
 const {
+  buildStaffOrderingSettingsPayload
+} = require("../utils/staff-ordering-settings-presentation");
+const {
   attachCanonicalStaffTenantContext
 } = require("../utils/tenant-staff-context");
 const {
@@ -82,6 +85,9 @@ const {
 const {
   fetchTenantStaffMenuBundle
 } = require("../utils/tenant-staff-menu");
+const {
+  fetchTenantStaffOrderingSettingsBundle
+} = require("../utils/tenant-staff-ordering-settings");
 const {
   buildStaffOrderingDisabledPayload,
   fetchHotelOrderingSettings,
@@ -125,6 +131,30 @@ async function attachStaffMenuTenantContext(req, res, next) {
 }
 function requireStaffMenuFoodModule(req, res, next) {
   if (env.tenantRuntimeStaffMenuEnabled) return next();
+  return requireStaffFoodModule(req, res, next);
+}
+async function attachStaffOrderingSettingsTenantContext(
+  req,
+  res,
+  next
+) {
+  if (!env.tenantRuntimeStaffOrderingSettingsEnabled) return next();
+  try {
+    const hotel = await attachCanonicalStaffTenantContext(req);
+    if (!hotel) {
+      return res.status(403).json({
+        success: false,
+        code: "HOTEL_SCOPE_REQUIRED",
+        message: "Staff hotel scope is not mapped to a tenant"
+      });
+    }
+    return next();
+  } catch (error) {
+    return next(error);
+  }
+}
+function requireStaffOrderingSettingsFoodModule(req, res, next) {
+  if (env.tenantRuntimeStaffOrderingSettingsEnabled) return next();
   return requireStaffFoodModule(req, res, next);
 }
 const requireStaffRoomService = requireHotelFeature("room_service", {
@@ -3013,7 +3043,12 @@ router.get(
   }
 });
 
-router.get("/ordering-settings", requireStaffAuth, requireStaffFoodModule, async (req, res) => {
+router.get(
+  "/ordering-settings",
+  requireStaffAuth,
+  attachStaffOrderingSettingsTenantContext,
+  requireStaffOrderingSettingsFoodModule,
+  async (req, res) => {
   try {
     const hotelSlug = String(req.staffHotelSlug || "").trim();
 
@@ -3024,22 +3059,27 @@ router.get("/ordering-settings", requireStaffAuth, requireStaffFoodModule, async
       });
     }
 
-    const settings = await fetchHotelOrderingSettings(hotelSlug);
-
-    res.json({
-      success: true,
-      hotelSlug,
-      ordering: {
-        staffOrderingEnabled: settings.staffOrderingEnabled !== false,
-        enforceTableMaster: settings.enforceTableMaster === true,
-        secureOnlinePaymentEnabled: settings.secureOnlinePaymentEnabled !== false,
-        cashOnDeliveryEnabled: settings.cashOnDeliveryEnabled !== false,
-        manualUpiPaymentEnabled: settings.manualUpiPaymentEnabled !== false,
-        title: settings.disabledTitle || "",
-        message: settings.disabledMessage || "",
-        icon: settings.disabledIcon || ""
+    let settings;
+    if (env.tenantRuntimeStaffOrderingSettingsEnabled) {
+      const tenantResult =
+        await fetchTenantStaffOrderingSettingsBundle(
+          getTenantRequestScope(req),
+          hotelSlug
+        );
+      if (!isHotelFeatureEnabled(tenantResult.featureConfig, "food")) {
+        return res
+          .status(403)
+          .json(buildFeatureDisabledPayload("food"));
       }
-    });
+      settings = tenantResult.settings;
+    } else {
+      settings = await fetchHotelOrderingSettings(hotelSlug);
+    }
+
+    res.json(buildStaffOrderingSettingsPayload({
+      hotelSlug,
+      settings
+    }));
   } catch (error) {
     console.error("Staff ordering settings fetch error:", error);
     res.status(500).json({

@@ -36,6 +36,8 @@ port: Number(getEnv("PORT", "10000")),
     getEnv("TENANT_RUNTIME_PUBLIC_ORDER_TRACKING_ENABLED", "false") === "true",
   tenantRuntimeStaffMenuEnabled:
     getEnv("TENANT_RUNTIME_STAFF_MENU_ENABLED", "false") === "true",
+  tenantRuntimeStaffOrderingSettingsEnabled:
+    getEnv("TENANT_RUNTIME_STAFF_ORDERING_SETTINGS_ENABLED", "false") === "true",
   tenantDatabaseUrl: getEnv("TENANT_DATABASE_URL", ""),
   tenantDatabasePoolMax: Number(getEnv("TENANT_DATABASE_POOL_MAX", "10")),
   tenantDatabaseIdleTimeoutMs: Number(
