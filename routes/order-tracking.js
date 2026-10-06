@@ -1132,7 +1132,10 @@ router.get("/:hotelSlug/:orderId", trackingViewLimiter, requirePublicFoodTrackin
   try {
     const hotelSlug = normalizePublicText(req.params.hotelSlug, 120);
     const orderId = normalizePublicText(req.params.orderId, 120);
-    const token = normalizePublicText(req.query.token, 200);
+    const token = normalizePublicText(
+      req.get("X-Order-Tracking-Token") || req.query.token,
+      200
+    );
 
     if (!hotelSlug || !orderId || !token) {
       return res.status(400).json({

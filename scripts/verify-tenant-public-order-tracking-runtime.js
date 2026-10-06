@@ -231,21 +231,25 @@ function fixtureDigest(fixture) {
 
 function buildTrackingUrl(baseUrl, fixture, forgedContext = {}) {
   const query = new URLSearchParams({
-    token: fixture.token,
     tenant_id: forgedContext.forgedTenantId || "",
     property_id: forgedContext.forgedPropertyId || ""
   });
   return `${baseUrl}/api/order-tracking/${encodeURIComponent(fixture.slug)}/${encodeURIComponent(fixture.orderId)}?${query}`;
 }
 
-async function fetchWithMode(baseUrl, fixture, context, restricted) {
-  env.tenantRuntimePublicOrderTrackingEnabled = restricted;
+async function requestFixture(baseUrl, fixture, context) {
   return requestJson(buildTrackingUrl(baseUrl, fixture, context), {
     headers: {
+      "X-Order-Tracking-Token": fixture.token,
       "x-tenant-id": context.forgedTenantId,
       "x-property-id": context.forgedPropertyId
     }
   });
+}
+
+async function fetchWithMode(baseUrl, fixture, context, restricted) {
+  env.tenantRuntimePublicOrderTrackingEnabled = restricted;
+  return requestFixture(baseUrl, fixture, context);
 }
 
 function safeFailure(error) {
@@ -313,9 +317,7 @@ async function main() {
       tenantB = {
         trackingAvailable: false,
         crossTenantEvidenceDenied: verifyTrackingDenied(
-          await requestJson(
-            buildTrackingUrl(local.baseUrl, crossTenantFixture, inputs.contextB)
-          )
+          await requestFixture(local.baseUrl, crossTenantFixture, inputs.contextB)
         )
       };
       compatibility.tenantB = "NO_EXISTING_TRACKING_FIXTURE";
@@ -323,32 +325,32 @@ async function main() {
 
     env.tenantRuntimePublicOrderTrackingEnabled = true;
     const wrongToken = verifyTrackingDenied(
-      await requestJson(buildTrackingUrl(local.baseUrl, {
+      await requestFixture(local.baseUrl, {
         ...fixtureA,
         token: `${fixtureA.token}-invalid`
-      }, inputs.contextA))
+      }, inputs.contextA)
     );
     const wrongSlug = verifyTrackingDenied(
-      await requestJson(buildTrackingUrl(local.baseUrl, {
+      await requestFixture(local.baseUrl, {
         ...fixtureA,
         slug: inputs.contextB.slug
-      }, inputs.contextB))
+      }, inputs.contextB)
     );
     const unknownSlug = verifyTrackingDenied(
-      await requestJson(buildTrackingUrl(local.baseUrl, {
+      await requestFixture(local.baseUrl, {
         ...fixtureA,
         slug: "task3e-property-does-not-exist"
-      }, inputs.contextA))
+      }, inputs.contextA)
     );
 
     let concurrentPasses = 0;
     for (let index = 0; index < inputs.iterations; index += 1) {
       const pair = await Promise.all([
-        requestJson(buildTrackingUrl(local.baseUrl, fixtureA, inputs.contextA)),
-        requestJson(buildTrackingUrl(local.baseUrl, {
+        requestFixture(local.baseUrl, fixtureA, inputs.contextA),
+        requestFixture(local.baseUrl, {
           ...fixtureA,
           slug: inputs.contextB.slug
-        }, inputs.contextB))
+        }, inputs.contextB)
       ]);
       verifyTrackingSuccess(pair[0]);
       verifyTrackingDenied(pair[1]);
@@ -408,6 +410,7 @@ if (require.main === module) {
 
 module.exports = {
   compatibilityDigest,
+  discoverTrackingFixture,
   fixtureDigest,
   hasInternalContext,
   readPositiveInteger,
