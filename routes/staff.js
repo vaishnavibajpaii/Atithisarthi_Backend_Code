@@ -77,6 +77,9 @@ const {
   buildStaffOrderingSettingsPayload
 } = require("../utils/staff-ordering-settings-presentation");
 const {
+  buildStaffSessionPayload
+} = require("../utils/staff-session-presentation");
+const {
   attachCanonicalStaffTenantContext
 } = require("../utils/tenant-staff-context");
 const {
@@ -88,6 +91,9 @@ const {
 const {
   fetchTenantStaffOrderingSettingsBundle
 } = require("../utils/tenant-staff-ordering-settings");
+const {
+  fetchTenantStaffSessionFeatures
+} = require("../utils/tenant-staff-session");
 const {
   buildStaffOrderingDisabledPayload,
   fetchHotelOrderingSettings,
@@ -156,6 +162,22 @@ async function attachStaffOrderingSettingsTenantContext(
 function requireStaffOrderingSettingsFoodModule(req, res, next) {
   if (env.tenantRuntimeStaffOrderingSettingsEnabled) return next();
   return requireStaffFoodModule(req, res, next);
+}
+async function attachStaffSessionTenantContext(req, res, next) {
+  if (!env.tenantRuntimeStaffSessionEnabled) return next();
+  try {
+    const hotel = await attachCanonicalStaffTenantContext(req);
+    if (!hotel) {
+      return res.status(403).json({
+        success: false,
+        code: "HOTEL_SCOPE_REQUIRED",
+        message: "Staff hotel scope is not mapped to a tenant"
+      });
+    }
+    return next();
+  } catch (error) {
+    return next(error);
+  }
 }
 const requireStaffRoomService = requireHotelFeature("room_service", {
   resolveHotelSlug: resolveStaffHotelSlug
@@ -705,24 +727,6 @@ function buildStaffUserResponse(staffAccess, features = null) {
     isManager: isStaffManagerRole(role),
     kdsRole,
     features: normalizeHotelFeatureConfig(features || {}, staffAccess.hotel_slug)
-  };
-}
-
-function buildStaffSessionResponse(staffUser = {}, features = null) {
-  const role = normalizeStaffRole(staffUser.role);
-  const kdsRole = normalizeStaffKdsRole(staffUser.kdsRole || staffUser.kds_role, role);
-
-  return {
-    id: staffUser.sub || staffUser.id || "",
-    hotelSlug: staffUser.hotelSlug || staffUser.hotel_slug || "",
-    displayName: staffUser.displayName || staffUser.display_name || "Staff",
-    role,
-    isManager: isStaffManagerRole(role),
-    kdsRole,
-    features: normalizeHotelFeatureConfig(
-      features || staffUser.features || {},
-      staffUser.hotelSlug || staffUser.hotel_slug
-    )
   };
 }
 
@@ -5393,15 +5397,23 @@ router.patch("/orders/:id/mark-family-paid", requireStaffAuth, requireStaffManag
   }
 });
 
-router.get("/me", requireStaffAuth, async (req, res) => {
+router.get(
+  "/me",
+  requireStaffAuth,
+  attachStaffSessionTenantContext,
+  async (req, res) => {
   try {
-    const featureConfig = await fetchHotelFeatureConfig(supabase, req.staffHotelSlug);
+    const featureConfig = env.tenantRuntimeStaffSessionEnabled
+      ? await fetchTenantStaffSessionFeatures(
+          getTenantRequestScope(req),
+          req.staffHotelSlug
+        )
+      : await fetchHotelFeatureConfig(supabase, req.staffHotelSlug);
 
-    res.json({
-      success: true,
-      staffUser: buildStaffSessionResponse(req.staffUser, featureConfig),
+    res.json(buildStaffSessionPayload({
+      staffUser: req.staffUser,
       features: featureConfig
-    });
+    }));
   } catch (error) {
     console.error("Staff session feature resolution error:", error);
     res.status(503).json({
@@ -5410,7 +5422,8 @@ router.get("/me", requireStaffAuth, async (req, res) => {
       message: "Hotel feature configuration could not be loaded"
     });
   }
-});
+  }
+);
 
 module.exports = router;
 

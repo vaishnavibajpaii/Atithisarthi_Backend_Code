@@ -141,6 +141,9 @@ function getReadinessChecks() {
   const tenantStaffOrderingSettingsReady =
     !env.tenantRuntimeStaffOrderingSettingsEnabled ||
     (env.tenantRuntimeEnabled && hasText(env.tenantDatabaseUrl));
+  const tenantStaffSessionReady =
+    !env.tenantRuntimeStaffSessionEnabled ||
+    (env.tenantRuntimeEnabled && hasText(env.tenantDatabaseUrl));
 
   return [
     buildReadinessCheck(
@@ -247,6 +250,12 @@ function getReadinessChecks() {
       tenantStaffOrderingSettingsReady,
       "tenant_staff_ordering_settings_requires_tenant_runtime",
       env.tenantRuntimeStaffOrderingSettingsEnabled
+    ),
+    buildReadinessCheck(
+      "tenant_runtime_staff_session",
+      tenantStaffSessionReady,
+      "tenant_staff_session_requires_tenant_runtime",
+      env.tenantRuntimeStaffSessionEnabled
     )
   ];
 }
