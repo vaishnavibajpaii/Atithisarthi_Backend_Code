@@ -51,6 +51,10 @@ const {
 } = require("../utils/hotel-ordering-settings");
 const { invalidatePublicMenuCache } = require("../utils/public-route-cache");
 const {
+  isPropertyStoragePath,
+  resolvePropertyStorageScope
+} = require("../utils/storage-object-scope");
+const {
   buildMenuCategoryDto,
   createMenuCategorySlug,
   fetchHotelMenuCategories,
@@ -937,14 +941,16 @@ function buildMenuCategoryWritePayload(body = {}, existing = {}) {
   return payload;
 }
 
-function assertMenuCategoryImageScope(hotelSlug, body = {}) {
-  const normalizedHotelSlug = normalizeMenuCategoryText(hotelSlug, 120).toLowerCase();
+async function assertMenuCategoryImageScope(hotelSlug, body = {}) {
   const storagePath = normalizeMenuCategoryText(body.imageStoragePath, 500).toLowerCase();
   const hasRemoteImage = [body.defaultImageUrl, body.defaultThumbnailUrl].some((value) =>
     /^https?:\/\//i.test(String(value || "").trim())
   );
-  if (storagePath && !storagePath.startsWith(`${normalizedHotelSlug}/`)) {
-    throw createHttpError(400, "Category image storage path does not belong to this hotel");
+  if (storagePath) {
+    const propertyScope = await resolvePropertyStorageScope(supabase, hotelSlug);
+    if (!isPropertyStoragePath(storagePath, propertyScope, { allowLegacy: true })) {
+      throw createHttpError(400, "Category image storage path does not belong to this hotel");
+    }
   }
   if (hasRemoteImage && !storagePath) {
     throw createHttpError(400, "Uploaded category images require a hotel-scoped storage path");
@@ -2271,7 +2277,7 @@ router.post(
   async (req, res) => {
     try {
       const input = req.validatedBody;
-      assertMenuCategoryImageScope(input.hotelSlug, input);
+      await assertMenuCategoryImageScope(input.hotelSlug, input);
       const payload = buildMenuCategoryWritePayload({
         ...input,
         slug: input.slug || createMenuCategorySlug(input.name)
@@ -2316,7 +2322,7 @@ router.patch(
         .maybeSingle();
       if (existingError) throw existingError;
       if (!existing) return res.status(404).json({ success: false, message: "Menu category not found" });
-      assertMenuCategoryImageScope(existing.hotel_slug, req.validatedBody);
+      await assertMenuCategoryImageScope(existing.hotel_slug, req.validatedBody);
       const updatePayload = buildMenuCategoryWritePayload(req.validatedBody, existing);
       const { data, error } = await supabase
         .from("menu_categories")

@@ -18,6 +18,13 @@ const {
   isMissingLoginBrandingRelationError
 } = require("../utils/login-branding");
 const { getImageDimensions } = require("../utils/image-dimensions");
+const {
+  buildPlatformStoragePath,
+  buildPropertyStoragePath,
+  isPlatformStoragePath,
+  isPropertyStoragePath,
+  resolvePropertyStorageScope
+} = require("../utils/storage-object-scope");
 
 const publicRouter = express.Router();
 const adminRouter = express.Router();
@@ -97,20 +104,8 @@ async function getBrandingRow(scope) {
 }
 
 async function assertHotelExists(scope) {
-  if (scope.scopeType !== "hotel") return;
-
-  const { data, error } = await supabase
-    .from("hotels")
-    .select("hotel_slug")
-    .eq("hotel_slug", scope.hotelSlug)
-    .maybeSingle();
-
-  if (error) throw error;
-  if (!data) {
-    const notFound = new Error("Hotel not found");
-    notFound.statusCode = 404;
-    throw notFound;
-  }
+  if (scope.scopeType !== "hotel") return null;
+  return resolvePropertyStorageScope(supabase, scope.hotelSlug);
 }
 
 async function writeAudit({ rowId = null, scope, action, actorId, metadata = {} }) {
@@ -341,9 +336,12 @@ adminRouter.post("/image", handleUploadMiddleware, async (req, res) => {
   }
 
   try {
-    await assertHotelExists(scope);
+    const propertyScope = await assertHotelExists(scope);
     const extension = ALLOWED_IMAGE_TYPES.get(file.mimetype);
-    const storagePath = `${getScopeStoragePrefix(scope)}${imageType}-${Date.now()}-${crypto.randomBytes(8).toString("hex")}${extension}`;
+    const fileName = `${imageType}-${Date.now()}-${crypto.randomBytes(8).toString("hex")}${extension}`;
+    const storagePath = scope.scopeType === "platform"
+      ? buildPlatformStoragePath("login-branding", fileName)
+      : buildPropertyStoragePath(propertyScope, "login-branding", fileName);
     const { error } = await supabase.storage.from("hotel-assets").upload(storagePath, file.buffer, {
       contentType: file.mimetype,
       upsert: false,
@@ -370,12 +368,18 @@ adminRouter.post("/image", handleUploadMiddleware, async (req, res) => {
 adminRouter.delete("/image", validateBody(loginBrandingImageDeleteSchema), async (req, res) => {
   const scope = normalizeScope(req.validatedBody);
   const storagePath = req.validatedBody.storagePath;
-  if (!storagePath.startsWith(getScopeStoragePrefix(scope)) || storagePath.includes("..")) {
+  if (storagePath.includes("..")) {
     return res.status(403).json({ success: false, message: "Image path does not belong to this branding scope" });
   }
 
   try {
-    await assertHotelExists(scope);
+    const propertyScope = await assertHotelExists(scope);
+    const belongsToScope = scope.scopeType === "platform"
+      ? isPlatformStoragePath(storagePath, "login-branding")
+      : isPropertyStoragePath(storagePath, propertyScope, { resource: "login-branding", allowLegacy: true });
+    if (!belongsToScope) {
+      return res.status(403).json({ success: false, message: "Image path does not belong to this branding scope" });
+    }
     const { data: publicData } = supabase.storage.from("hotel-assets").getPublicUrl(storagePath);
     const publicUrl = String(publicData?.publicUrl || "").trim();
     const row = await getBrandingRow(scope);

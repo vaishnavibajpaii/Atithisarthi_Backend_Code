@@ -10,6 +10,11 @@ const {
 } = require("../validators/room-checkout-bill");
 const { getImageDimensions } = require("../utils/image-dimensions");
 const {
+  buildPropertyStoragePath,
+  isPropertyStoragePath,
+  resolvePropertyStorageScope
+} = require("../utils/storage-object-scope");
+const {
   getBillFormat,
   getCheckoutBill,
   isMissingBillSchemaError,
@@ -190,11 +195,12 @@ function createRoomCheckoutBillRouter({
       }
 
       const extension = ALLOWED_LOGO_TYPES.get(req.file.mimetype);
-      const storagePath = [
-        safeStorageSegment(hotelSlug),
+      const propertyScope = await resolvePropertyStorageScope(supabaseClient, hotelSlug);
+      const storagePath = buildPropertyStoragePath(
+        propertyScope,
         "room-checkout-bill",
         `${Date.now()}-${safeFileStem(req.file.originalname)}${extension}`
-      ].join("/");
+      );
       const { error: uploadError } = await supabaseClient.storage
         .from("hotel-assets")
         .upload(storagePath, req.file.buffer, {
@@ -250,8 +256,11 @@ function createRoomCheckoutBillRouter({
         return res.status(403).json({ success: false, message: "Hotel scope is missing" });
       }
       const current = await getBillFormat({ supabaseClient, hotelSlug });
-      const expectedPrefix = `${safeStorageSegment(hotelSlug)}/room-checkout-bill/`;
-      if (current.logoStoragePath && current.logoStoragePath.startsWith(expectedPrefix)) {
+      const propertyScope = await resolvePropertyStorageScope(supabaseClient, hotelSlug);
+      if (current.logoStoragePath && isPropertyStoragePath(current.logoStoragePath, propertyScope, {
+        resource: "room-checkout-bill",
+        allowLegacy: true
+      })) {
         const { error } = await supabaseClient.storage
           .from("hotel-assets")
           .remove([current.logoStoragePath]);

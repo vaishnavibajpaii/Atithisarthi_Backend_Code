@@ -28,6 +28,11 @@ const {
 } = require("../validators/room-media");
 const { supabase } = require("../utils/supabase");
 const { getImageDimensions } = require("../utils/image-dimensions");
+const {
+  buildPropertyStoragePath,
+  isPropertyStoragePath,
+  resolvePropertyStorageScope
+} = require("../utils/storage-object-scope");
 const { invalidatePublicRoomsCache } = require("../utils/public-route-cache");
 const { isRoomBookingOverlapError, ROOM_BOOKING_CONFLICT_CODE, ROOM_BOOKING_CONFLICT_MESSAGE } = require("../utils/room-availability");
 const {
@@ -473,10 +478,7 @@ router.post("/media/:targetType/:targetId/images", handleRoomImageUpload, async 
       return res.status(400).json({ success: false, code: "ROOM_IMAGE_DIMENSIONS_INVALID", message: "Room image dimensions must be between 320x240 and 8000x8000 pixels" });
     }
     const hotelSlug = scope(req);
-    const safeHotelSlug = safeStorageSegment(hotelSlug);
-    if (safeHotelSlug !== hotelSlug) {
-      return res.status(400).json({ success: false, code: "ROOM_IMAGE_HOTEL_SCOPE_INVALID", message: "Hotel image storage scope is invalid" });
-    }
+    const propertyScope = await resolvePropertyStorageScope(supabase, hotelSlug);
     const countResult = await supabase
       .from("room_images")
       .select("id,display_order", { count: "exact" })
@@ -494,7 +496,11 @@ router.post("/media/:targetType/:targetId/images", handleRoomImageUpload, async 
       return res.status(400).json({ success: false, code: "ROOM_IMAGE_FIRST_INACTIVE", message: "The first room image must be active" });
     }
     const extension = ROOM_IMAGE_TYPES.get(req.file.mimetype);
-    uploadedPath = `${hotelSlug}/room-images/${target.type}-${target.targetId}/${Date.now()}-${crypto.randomUUID()}${extension}`;
+    uploadedPath = buildPropertyStoragePath(
+      propertyScope,
+      `room-images/${target.type}-${target.targetId}`,
+      `${Date.now()}-${crypto.randomUUID()}${extension}`
+    );
     const { error: uploadError } = await supabase.storage
       .from(ROOM_IMAGE_BUCKET)
       .upload(uploadedPath, req.file.buffer, { contentType: req.file.mimetype, cacheControl: "31536000", upsert: false });
@@ -611,9 +617,12 @@ router.delete("/media/:targetType/:targetId/images/:imageId", async (req, res) =
     const who = actor(req);
     const removed = await supabase.rpc("delete_room_image", { p_hotel_slug: scope(req), p_image_id: imageId, p_actor_id: who.id, p_actor_role: who.role });
     if (removed.error) throw removed.error;
-    const expectedPrefix = `${scope(req)}/room-images/`;
+    const propertyScope = await resolvePropertyStorageScope(supabase, scope(req));
     let storageWarning = "";
-    if (current.data.storage_path.startsWith(expectedPrefix)) {
+    if (isPropertyStoragePath(current.data.storage_path, propertyScope, {
+      resource: "room-images",
+      allowLegacy: true
+    })) {
       const storageResult = await supabase.storage.from(ROOM_IMAGE_BUCKET).remove([current.data.storage_path]);
       if (storageResult.error) {
         console.error("Room image object cleanup failed", storageResult.error);

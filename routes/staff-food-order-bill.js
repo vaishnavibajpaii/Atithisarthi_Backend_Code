@@ -14,6 +14,11 @@ const { getImageDimensions } = require("../utils/image-dimensions");
 const { requireStaffAuth, requireStaffManagerAccess } = require("../middleware/require-staff-auth");
 const { requireHotelFeature, resolveStaffHotelSlug } = require("../middleware/require-hotel-feature");
 const {
+  buildPropertyStoragePath,
+  isPropertyStoragePath,
+  resolvePropertyStorageScope
+} = require("../utils/storage-object-scope");
+const {
   getFoodBillFormat,
   getFoodOrderBill,
   getLatestFoodBillPreview,
@@ -248,11 +253,12 @@ router.post("/format/logo", handleLogoUpload, async (req, res) => {
     }
 
     const extension = ALLOWED_LOGO_TYPES.get(req.file.mimetype);
-    const storagePath = [
-      safeStorageSegment(hotelSlug),
+    const propertyScope = await resolvePropertyStorageScope(supabase, hotelSlug);
+    const storagePath = buildPropertyStoragePath(
+      propertyScope,
       "food-order-bill",
       `${Date.now()}-${safeFileStem(req.file.originalname)}${extension}`
-    ].join("/");
+    );
     const { error: uploadError } = await supabase.storage
       .from("hotel-assets")
       .upload(storagePath, req.file.buffer, {
@@ -307,8 +313,11 @@ router.delete("/format/logo", async (req, res) => {
       return res.status(403).json({ success: false, message: "Hotel scope is missing" });
     }
     const current = await getFoodBillFormat({ supabaseClient: supabase, hotelSlug });
-    const expectedPrefix = `${safeStorageSegment(hotelSlug)}/food-order-bill/`;
-    if (current.logoStoragePath && current.logoStoragePath.startsWith(expectedPrefix)) {
+    const propertyScope = await resolvePropertyStorageScope(supabase, hotelSlug);
+    if (current.logoStoragePath && isPropertyStoragePath(current.logoStoragePath, propertyScope, {
+      resource: "food-order-bill",
+      allowLegacy: true
+    })) {
       const { error } = await supabase.storage
         .from("hotel-assets")
         .remove([current.logoStoragePath]);

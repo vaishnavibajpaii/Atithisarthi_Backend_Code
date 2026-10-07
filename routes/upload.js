@@ -4,6 +4,12 @@ const path = require("path");
 const { supabase } = require("../utils/supabase");
 const { requireAdminAuth } = require("../middleware/require-admin-auth");
 const { getImageDimensions } = require("../utils/image-dimensions");
+const {
+  authorizePlatformAdminStoragePath,
+  buildPlatformStoragePath,
+  buildPropertyStoragePath,
+  resolvePropertyStorageScope
+} = require("../utils/storage-object-scope");
 
 const router = express.Router();
 
@@ -177,13 +183,25 @@ router.post(
         }
       }
 
-      const safeHotelSlug = sanitizeStorageSegment(hotelSlug, "shared");
       const safeFolder = sanitizeStorageSegment(folder, "misc");
       const ext = getSafeImageExtension(file);
       const baseName = path.basename(file.originalname || "file", ext);
       const safeName = sanitizeFileName(baseName);
       const uniqueName = `${Date.now()}-${safeName}${ext}`;
-      const storagePath = `${safeHotelSlug}/${safeFolder}/${uniqueName}`;
+      let storagePath;
+      let storageScope;
+      if (["shared", "platform"].includes(hotelSlug.toLowerCase())) {
+        storagePath = buildPlatformStoragePath(safeFolder, uniqueName);
+        storageScope = { kind: "platform" };
+      } else {
+        const propertyScope = await resolvePropertyStorageScope(supabase, hotelSlug);
+        storagePath = buildPropertyStoragePath(propertyScope, safeFolder, uniqueName);
+        storageScope = {
+          kind: "property",
+          propertyId: propertyScope.propertyId,
+          propertySlug: propertyScope.propertySlug
+        };
+      }
 
       const { error: uploadError } = await supabase.storage
         .from("hotel-assets")
@@ -206,14 +224,15 @@ router.post(
         file: {
           originalName: file.originalname,
           path: storagePath,
-          publicUrl: publicData.publicUrl
+          publicUrl: publicData.publicUrl,
+          storageScope
         }
       });
     } catch (error) {
       console.error("Upload error:", error);
-      res.status(500).json({
+      res.status(error.statusCode || 500).json({
         success: false,
-        message: "Failed to upload file"
+        message: error.statusCode ? error.message : "Failed to upload file"
       });
     }
   }
@@ -230,6 +249,14 @@ router.delete("/", requireAdminAuth, async (req, res) => {
       });
     }
 
+    const authorization = await authorizePlatformAdminStoragePath(supabase, storagePath);
+    if (!authorization) {
+      return res.status(403).json({
+        success: false,
+        message: "Storage path is not a recognized platform or current hotel scope"
+      });
+    }
+
     const { error } = await supabase.storage
       .from("hotel-assets")
       .remove([storagePath]);
@@ -238,13 +265,14 @@ router.delete("/", requireAdminAuth, async (req, res) => {
 
     res.json({
       success: true,
-      message: "File deleted successfully"
+      message: "File deleted successfully",
+      storageScope: authorization.kind
     });
   } catch (error) {
     console.error("File delete error:", error);
-    res.status(500).json({
+    res.status(error.statusCode || 500).json({
       success: false,
-      message: "Failed to delete file"
+      message: error.statusCode ? error.message : "Failed to delete file"
     });
   }
 });
