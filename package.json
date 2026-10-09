@@ -136,6 +136,7 @@
     "test:tenant-storage-runtime-verifier": "node --test tests/tenant-storage-runtime-verifier.test.js",
     "verify:tenant-runtime-connection": "node scripts/verify-tenant-runtime-connection.js",
     "verify:tenant-runtime-writes": "node scripts/verify-tenant-runtime-writes.js",
+    "verify:tenant-runtime-writes-live": "node scripts/verify-tenant-runtime-writes-live.js",
     "verify:tenant-write-boundaries": "node scripts/verify-tenant-write-boundaries.js",
     "verify:tenant-storage-runtime": "node scripts/verify-task3f-storage-runtime.js",
     "verify:tenant-public-hotel-runtime": "node scripts/verify-tenant-public-hotel-runtime.js",

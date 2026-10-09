@@ -131,6 +131,12 @@ verify("Synthetic write canary is guarded, side-effect isolated, and self-cleani
   assert.match(source, /verifyAtomicRollback/);
   assert.match(source, /finally/);
   assert.match(source, /cleanupFixture/);
+  const liveSource = read("backend/scripts/verify-tenant-runtime-writes-live.js");
+  assert.match(liveSource, /TASK3G_LIVE_HTTP_WRITES_SYNTHETIC/);
+  assert.match(liveSource, /requireEnabledReadyCheck\(readiness, "tenant_runtime_writes"\)/);
+  assert.match(liveSource, /TEST_TASK3G_HTTP_/);
+  assert.match(liveSource, /notificationDelivery: "DISABLED"/);
+  assert.match(liveSource, /cleanupFixture/);
 });
 
 process.stdout.write(`\nTenant write-boundary verification passed (${checks.length}/${checks.length}).\n`);
