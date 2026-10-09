@@ -86,10 +86,17 @@ const {
   getTenantRequestScope
 } = require("../utils/tenant-request-context");
 const {
+  getStaffTenantMutationClient
+} = require("../utils/tenant-route-database");
+const {
+  createTenantMutationClient
+} = require("../utils/tenant-mutation-client");
+const {
   fetchTenantStaffMenuBundle
 } = require("../utils/tenant-staff-menu");
 const {
-  fetchTenantStaffOrderingSettingsBundle
+  fetchTenantStaffOrderingSettingsBundle,
+  updateTenantStaffPaymentMethods
 } = require("../utils/tenant-staff-ordering-settings");
 const {
   fetchTenantStaffSessionFeatures
@@ -144,7 +151,10 @@ async function attachStaffOrderingSettingsTenantContext(
   res,
   next
 ) {
-  if (!env.tenantRuntimeStaffOrderingSettingsEnabled) return next();
+  if (
+    !env.tenantRuntimeStaffOrderingSettingsEnabled &&
+    !env.tenantRuntimeWritesEnabled
+  ) return next();
   try {
     const hotel = await attachCanonicalStaffTenantContext(req);
     if (!hotel) {
@@ -160,7 +170,10 @@ async function attachStaffOrderingSettingsTenantContext(
   }
 }
 function requireStaffOrderingSettingsFoodModule(req, res, next) {
-  if (env.tenantRuntimeStaffOrderingSettingsEnabled) return next();
+  if (
+    env.tenantRuntimeStaffOrderingSettingsEnabled ||
+    env.tenantRuntimeWritesEnabled
+  ) return next();
   return requireStaffFoodModule(req, res, next);
 }
 async function attachStaffSessionTenantContext(req, res, next) {
@@ -651,11 +664,15 @@ async function fetchStaffOrderFamily({ hotelSlug, orderId }) {
   };
 }
 
-async function updateStaffOrderFamilyRecords({ familyOrders, buildUpdatePayload }) {
+async function updateStaffOrderFamilyRecords({
+  databaseClient,
+  familyOrders,
+  buildUpdatePayload
+}) {
   const updatedOrders = [];
 
   for (const order of familyOrders) {
-    const { data, error } = await supabase
+    const { data, error } = await databaseClient
       .from("orders")
       .update(buildUpdatePayload(order))
       .eq("id", order.id)
@@ -1052,9 +1069,9 @@ function buildStaffRoomServiceOrderSummary({
   return lines.join("\n");
 }
 
-async function insertStaffTableOrderRow(baseOrderRow, optionalOrderColumns) {
+async function insertStaffTableOrderRow(databaseClient, baseOrderRow, optionalOrderColumns) {
   let currentOptionalOrderColumns = { ...optionalOrderColumns };
-  let insertAttempt = await supabase
+  let insertAttempt = await databaseClient
     .from("orders")
     .insert([{ ...baseOrderRow, ...currentOptionalOrderColumns }])
     .select()
@@ -1064,7 +1081,7 @@ async function insertStaffTableOrderRow(baseOrderRow, optionalOrderColumns) {
     const { tracking_token, tracking_token_created_at, ...columnsWithoutTracking } =
       currentOptionalOrderColumns;
     currentOptionalOrderColumns = columnsWithoutTracking;
-    insertAttempt = await supabase
+    insertAttempt = await databaseClient
       .from("orders")
       .insert([{ ...baseOrderRow, ...currentOptionalOrderColumns }])
       .select()
@@ -1078,7 +1095,7 @@ async function insertStaffTableOrderRow(baseOrderRow, optionalOrderColumns) {
     const { created_by_staff_id, ...columnsWithoutStaffAttribution } =
       currentOptionalOrderColumns;
     currentOptionalOrderColumns = columnsWithoutStaffAttribution;
-    insertAttempt = await supabase
+    insertAttempt = await databaseClient
       .from("orders")
       .insert([{ ...baseOrderRow, ...currentOptionalOrderColumns }])
       .select()
@@ -1110,8 +1127,8 @@ function normalizeStaffActiveTableOrderResult(value = null) {
   return value && typeof value === "object" ? value : null;
 }
 
-async function fetchStaffActiveTableOrder({ hotelSlug, tableNumber }) {
-  const { data, error } = await supabase.rpc("get_staff_active_table_order", {
+async function fetchStaffActiveTableOrder({ databaseClient, hotelSlug, tableNumber }) {
+  const { data, error } = await databaseClient.rpc("get_staff_active_table_order", {
     p_hotel_slug: hotelSlug,
     p_table_number: tableNumber
   });
@@ -1122,12 +1139,12 @@ async function fetchStaffActiveTableOrder({ hotelSlug, tableNumber }) {
   };
 }
 
-async function insertStaffTableOrderWithActiveTableGuard(baseOrderRow, optionalOrderColumns) {
+async function insertStaffTableOrderWithActiveTableGuard(databaseClient, baseOrderRow, optionalOrderColumns) {
   const orderPayload = {
     ...baseOrderRow,
     ...optionalOrderColumns
   };
-  const { data, error } = await supabase.rpc("create_staff_table_order_if_available", {
+  const { data, error } = await databaseClient.rpc("create_staff_table_order_if_available", {
     p_order: orderPayload
   });
 
@@ -2862,7 +2879,8 @@ async function updateStaffScopedRecordStatus(req, res, config = {}) {
       });
     }
 
-    const { data, error } = await supabase
+    const database = await getStaffTenantMutationClient(req, supabase);
+    const { data, error } = await database
       .from(config.table)
       .update({ status })
       .eq("id", recordId)
@@ -2944,10 +2962,25 @@ router.post("/login", validateBody(staffLoginSchema), async (req, res) => {
       });
     }
 
-    await supabase
+    const loginAuditDatabase = env.tenantRuntimeWritesEnabled
+      ? createTenantMutationClient({
+          tenantId: matchedStaffAccess.tenant_id,
+          propertyId: matchedStaffAccess.property_id,
+          propertySlug: matchedStaffAccess.hotel_slug
+        })
+      : supabase;
+    const loginAuditResult = await loginAuditDatabase
       .from("hotel_staff_access")
       .update({ last_login_at: new Date().toISOString() })
-      .eq("id", matchedStaffAccess.id);
+      .eq("id", matchedStaffAccess.id)
+      .eq("hotel_slug", matchedStaffAccess.hotel_slug);
+    if (loginAuditResult.error) {
+      logger.warn("Staff last-login audit update failed", {
+        hotelSlug: matchedStaffAccess.hotel_slug,
+        staffUserId: String(matchedStaffAccess.id || ""),
+        code: String(loginAuditResult.error.code || "STAFF_LOGIN_AUDIT_FAILED")
+      });
+    }
 
     const token = signStaffToken(matchedStaffAccess);
     const featureConfig = await fetchHotelFeatureConfig(
@@ -3097,7 +3130,8 @@ router.patch(
   "/ordering-settings/payment-methods",
   requireStaffAuth,
   requireStaffManagerAccess,
-  requireStaffFoodModule,
+  attachStaffOrderingSettingsTenantContext,
+  requireStaffOrderingSettingsFoodModule,
   validateBody(staffPaymentMethodSettingsSchema),
   async (req, res) => {
     try {
@@ -3114,36 +3148,57 @@ router.patch(
         cashOnDeliveryEnabled,
         manualUpiPaymentEnabled
       } = req.validatedBody;
-      const { data, error } = await supabase
-        .from("hotel_ordering_settings")
-        .upsert(
-          [{
-            hotel_slug: hotelSlug,
-            secure_online_payment_enabled: secureOnlinePaymentEnabled,
-            cash_on_delivery_enabled: cashOnDeliveryEnabled,
-            manual_upi_payment_enabled: manualUpiPaymentEnabled,
-            updated_at: new Date().toISOString()
-          }],
-          { onConflict: "hotel_slug" }
-        )
-        .select([
-          "hotel_slug",
-          "secure_online_payment_enabled",
-          "cash_on_delivery_enabled",
-          "manual_upi_payment_enabled",
-          "updated_at"
-        ].join(","))
-        .single();
+      let data;
+      if (
+        env.tenantRuntimeStaffOrderingSettingsEnabled ||
+        env.tenantRuntimeWritesEnabled
+      ) {
+        data = await updateTenantStaffPaymentMethods(
+          getTenantRequestScope(req),
+          hotelSlug,
+          {
+            secureOnlinePaymentEnabled,
+            cashOnDeliveryEnabled,
+            manualUpiPaymentEnabled
+          }
+        );
+      } else {
+        const legacyResult = await supabase
+          .from("hotel_ordering_settings")
+          .upsert(
+            [{
+              hotel_slug: hotelSlug,
+              secure_online_payment_enabled: secureOnlinePaymentEnabled,
+              cash_on_delivery_enabled: cashOnDeliveryEnabled,
+              manual_upi_payment_enabled: manualUpiPaymentEnabled,
+              updated_at: new Date().toISOString()
+            }],
+            { onConflict: "hotel_slug" }
+          )
+          .select([
+            "hotel_slug",
+            "secure_online_payment_enabled",
+            "cash_on_delivery_enabled",
+            "manual_upi_payment_enabled",
+            "updated_at"
+          ].join(","))
+          .single();
 
-      if (error) {
-        if (isMissingHotelOrderingSettingsTableError(error)) {
-          return res.status(400).json({
-            success: false,
-            code: "PAYMENT_SETTINGS_NOT_INITIALIZED",
-            message: "Hotel payment-method settings are not initialized yet"
-          });
+        if (legacyResult.error) {
+          if (isMissingHotelOrderingSettingsTableError(legacyResult.error)) {
+            return res.status(400).json({
+              success: false,
+              code: "PAYMENT_SETTINGS_NOT_INITIALIZED",
+              message: "Hotel payment-method settings are not initialized yet"
+            });
+          }
+          throw legacyResult.error;
         }
-        throw error;
+        data = legacyResult.data;
+      }
+
+      if (!data) {
+        throw new Error("Hotel payment-method settings write returned no row");
       }
 
       invalidateHotelOrderingSettings(hotelSlug);
@@ -3168,6 +3223,13 @@ router.patch(
         }
       });
     } catch (error) {
+      if (isMissingHotelOrderingSettingsTableError(error)) {
+        return res.status(400).json({
+          success: false,
+          code: "PAYMENT_SETTINGS_NOT_INITIALIZED",
+          message: "Hotel payment-method settings are not initialized yet"
+        });
+      }
       console.error("Staff payment-method settings save error:", error);
       return res.status(500).json({
         success: false,
@@ -3298,7 +3360,8 @@ router.patch(
         return res.status(403).json({ success: false, code: "KDS_ROLE_REQUIRED", message: kitchenStatus === "served" ? "Waiter or expo access is required." : "Kitchen access is required." });
       }
 
-      const { data, error } = await supabase
+      const databaseClient = await getStaffTenantMutationClient(req, supabase);
+      const { data, error } = await databaseClient
         .from("orders")
         .update({
           kitchen_status: kitchenStatus,
@@ -3402,7 +3465,8 @@ router.patch(
         ...item,
         kitchenStatus
       }));
-      const { data, error } = await supabase
+      const databaseClient = await getStaffTenantMutationClient(req, supabase);
+      const { data, error } = await databaseClient
         .from("order_rounds")
         .update({
           status: kitchenStatus,
@@ -3578,7 +3642,9 @@ router.get("/orders/active-table", requireStaffAuth, requireStaffFoodModule, asy
       });
     }
 
+    const databaseClient = await getStaffTenantMutationClient(req, supabase);
     const { data: activeOrder, error } = await fetchStaffActiveTableOrder({
+      databaseClient,
       hotelSlug,
       tableNumber
     });
@@ -3755,7 +3821,9 @@ router.post("/orders", requireStaffAuth, requireStaffFoodModule, validateBody(st
       ...getStaffOrderCreatorColumns(req.staffUser),
       ...getOrderTrackingColumns()
     };
+    const databaseClient = await getStaffTenantMutationClient(req, supabase);
     const { data, error, conflict } = await insertStaffTableOrderWithActiveTableGuard(
+      databaseClient,
       baseOrderRow,
       optionalOrderColumns
     );
@@ -3938,7 +4006,8 @@ router.post(
         note
       });
       const createdByStaffId = normalizeOrderCreatedByStaffId(req.staffUser?.sub || req.staffUser?.id);
-      const { data: rpcData, error: rpcError } = await supabase.rpc(
+      const databaseClient = await getStaffTenantMutationClient(req, supabase);
+      const { data: rpcData, error: rpcError } = await databaseClient.rpc(
         "add_staff_items_to_active_order",
         {
           p_hotel_slug: hotelSlug,
@@ -4139,7 +4208,8 @@ router.post("/room-service-orders", requireStaffAuth, requireStaffRoomService, v
       ...getStaffOrderCreatorColumns(req.staffUser),
       ...getOrderTrackingColumns()
     };
-    const { data, error } = await insertStaffTableOrderRow(baseOrderRow, optionalOrderColumns);
+    const databaseClient = await getStaffTenantMutationClient(req, supabase);
+    const { data, error } = await insertStaffTableOrderRow(databaseClient, baseOrderRow, optionalOrderColumns);
 
     if (error) {
       if (isMissingOrderRoomServiceColumnsError(error)) {
@@ -4790,7 +4860,8 @@ router.patch("/testimonials/:id/approval", requireStaffAuth, requireStaffManager
       is_archived: requestedAction === "reject" ? true : requestedAction === "approve" ? false : currentResult.data.is_archived,
       updated_at: nextUpdatedAt
     };
-    const { data, error } = await supabase
+    const databaseClient = await getStaffTenantMutationClient(req, supabase);
+    const { data, error } = await databaseClient
       .from("testimonials")
       .update(moderationUpdate)
       .eq("id", testimonialId)
@@ -4874,7 +4945,8 @@ router.patch("/orders/:id/status", requireStaffAuth, requireStaffFoodModule, asy
       }[status]
     };
 
-    const { data, error } = await supabase
+    const databaseClient = await getStaffTenantMutationClient(req, supabase);
+    const { data, error } = await databaseClient
       .from("orders")
       .update(lifecycleUpdate)
       .eq("id", orderId)
@@ -4983,7 +5055,8 @@ router.patch("/orders/:id/mark-billed", requireStaffAuth, requireStaffManagerAcc
       updatePayload.bill_number = buildOrderBillNumber(currentOrder, billedAt);
     }
 
-    const { data, error } = await supabase
+    const databaseClient = await getStaffTenantMutationClient(req, supabase);
+    const { data, error } = await databaseClient
       .from("orders")
       .update(updatePayload)
       .eq("id", orderId)
@@ -5045,7 +5118,7 @@ router.patch("/orders/:id/mark-billed", requireStaffAuth, requireStaffManagerAcc
     let foodBillSnapshotReady = false;
     try {
       foodBillSnapshotReady = await issueFoodBillSnapshotIfFinal({
-        supabaseClient: supabase,
+        supabaseClient: databaseClient,
         hotelSlug,
         orderId: data.id,
         actor: {
@@ -5136,7 +5209,8 @@ router.patch("/orders/:id/mark-paid", requireStaffAuth, requireStaffManagerAcces
       : new Date().toISOString();
     const currentVersion = Math.max(1, Number(currentOrder.order_version || 1));
 
-    const { data, error } = await supabase
+    const databaseClient = await getStaffTenantMutationClient(req, supabase);
+    const { data, error } = await databaseClient
       .from("orders")
       .update({
         payment_status: "paid",
@@ -5249,7 +5323,9 @@ router.patch("/orders/:id/mark-family-billed", requireStaffAuth, requireStaffMan
       });
     }
 
+    const databaseClient = await getStaffTenantMutationClient(req, supabase);
     const updatedOrders = await updateStaffOrderFamilyRecords({
+      databaseClient,
       familyOrders,
       buildUpdatePayload(order) {
         const isAlreadyBilled = normalizeStatusValue(order.billing_status) === "billed";
@@ -5273,7 +5349,7 @@ router.patch("/orders/:id/mark-family-billed", requireStaffAuth, requireStaffMan
     const foodBillSnapshotResults = await Promise.all(updatedOrders.map(async (order) => {
       try {
         return await issueFoodBillSnapshotIfFinal({
-          supabaseClient: supabase,
+          supabaseClient: databaseClient,
           hotelSlug,
           orderId: order.id,
           actor: {
@@ -5352,7 +5428,9 @@ router.patch("/orders/:id/mark-family-paid", requireStaffAuth, requireStaffManag
       });
     }
 
+    const databaseClient = await getStaffTenantMutationClient(req, supabase);
     const updatedOrders = await updateStaffOrderFamilyRecords({
+      databaseClient,
       familyOrders,
       buildUpdatePayload(order) {
         const isAlreadyPaid = normalizeStatusValue(order.payment_status) === "paid";

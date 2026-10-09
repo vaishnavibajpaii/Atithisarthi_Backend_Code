@@ -52,6 +52,8 @@ function normalizeEventType(sourceType, eventType) {
 }
 
 function buildNotificationEventRecord({
+  tenantId,
+  propertyId,
   hotelSlug,
   sourceType,
   sourceId,
@@ -70,6 +72,8 @@ function buildNotificationEventRecord({
   const normalizedEventType = normalizeEventType(normalizedSourceType, eventType);
 
   return {
+    ...(tenantId ? { tenant_id: String(tenantId).trim() } : {}),
+    ...(propertyId ? { property_id: String(propertyId).trim() } : {}),
     hotel_slug: hotelSlug ? String(hotelSlug).trim() : null,
     source_type: normalizedSourceType,
     source_id: normalizedSourceId,
@@ -91,7 +95,8 @@ function buildNotificationEventRecord({
 
 async function createNotificationEvent(input = {}) {
   const record = buildNotificationEventRecord(input);
-  let result = await supabase
+  const databaseClient = input.databaseClient || supabase;
+  let result = await databaseClient
     .from("notification_events")
     .insert([record])
     .select()
@@ -100,7 +105,7 @@ async function createNotificationEvent(input = {}) {
   if (result.error && isMissingNotificationDedupeColumnError(result.error)) {
     const compatibilityRecord = { ...record };
     delete compatibilityRecord.dedupe_key;
-    result = await supabase
+    result = await databaseClient
       .from("notification_events")
       .insert([compatibilityRecord])
       .select()
@@ -108,7 +113,7 @@ async function createNotificationEvent(input = {}) {
   }
 
   if (result.error && isNotificationDedupeConflict(result.error) && record.dedupe_key) {
-    const existing = await supabase
+    const existing = await databaseClient
       .from("notification_events")
       .select("*")
       .eq("hotel_slug", record.hotel_slug)
@@ -148,14 +153,14 @@ function buildHotelNotificationSettings(settingsRow, hotelSlug = "") {
   };
 }
 
-async function fetchHotelNotificationSettings(hotelSlug = "") {
+async function fetchHotelNotificationSettings(hotelSlug = "", databaseClient = supabase) {
   const normalizedHotelSlug = String(hotelSlug || "").trim();
 
   if (!normalizedHotelSlug) {
     return buildHotelNotificationSettings(null, "");
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await databaseClient
     .from("hotel_notification_settings")
     .select("*")
     .eq("hotel_slug", normalizedHotelSlug)
@@ -170,7 +175,8 @@ async function fetchHotelNotificationSettings(hotelSlug = "") {
 
 async function updateNotificationEventStatus(
   notificationEventId,
-  { status, errorMessage = null, processedAt = null } = {}
+  { status, errorMessage = null, processedAt = null } = {},
+  databaseClient = supabase
 ) {
   const normalizedId = String(notificationEventId || "").trim();
 
@@ -194,7 +200,7 @@ async function updateNotificationEventStatus(
     updatePayload.processed_at = processedAt || null;
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await databaseClient
     .from("notification_events")
     .update(updatePayload)
     .eq("id", normalizedId)
@@ -741,10 +747,12 @@ function getNotificationDeliverySkipReason(notificationEvent = {}, hotelSettings
   return `Notification delivery channel "${configuredChannel}" is not implemented yet`;
 }
 
-async function processNotificationEventDelivery(notificationEvent = {}) {
+async function processNotificationEventDelivery(notificationEvent = {}, options = {}) {
+  const databaseClient = options.databaseClient || supabase;
   const processedAt = new Date().toISOString();
   const hotelSettings = await fetchHotelNotificationSettings(
-    notificationEvent.hotel_slug || ""
+    notificationEvent.hotel_slug || "",
+    databaseClient
   );
   const skipReason = getNotificationDeliverySkipReason(
     notificationEvent,
@@ -756,7 +764,7 @@ async function processNotificationEventDelivery(notificationEvent = {}) {
       status: NOTIFICATION_SKIPPED_STATUS,
       errorMessage: skipReason,
       processedAt
-    });
+    }, databaseClient);
   }
 
   try {
@@ -766,19 +774,19 @@ async function processNotificationEventDelivery(notificationEvent = {}) {
       status: NOTIFICATION_SENT_STATUS,
       errorMessage: null,
       processedAt
-    });
+    }, databaseClient);
   } catch (error) {
     return updateNotificationEventStatus(notificationEvent.id, {
       status: NOTIFICATION_FAILED_STATUS,
       errorMessage: error.message || "Notification delivery failed",
       processedAt
-    });
+    }, databaseClient);
   }
 }
 
-async function processNotificationEventDeliverySafely(notificationEvent = {}) {
+async function processNotificationEventDeliverySafely(notificationEvent = {}, options = {}) {
   try {
-    return await processNotificationEventDelivery(notificationEvent);
+    return await processNotificationEventDelivery(notificationEvent, options);
   } catch (error) {
     console.error("Notification delivery process failed:", {
       notificationEventId: notificationEvent.id || null,
@@ -797,7 +805,8 @@ async function createNotificationEventSafely(input = {}) {
     // The event is persisted before it is published to live dashboard sessions.
     publishNotificationEvent(notificationEvent);
     const processedEvent = await processNotificationEventDeliverySafely(
-      notificationEvent
+      notificationEvent,
+      { databaseClient: input.databaseClient || supabase }
     );
 
     return processedEvent || notificationEvent;

@@ -4,6 +4,7 @@ const express = require("express");
 const multer = require("multer");
 const path = require("path");
 const { supabase } = require("../utils/supabase");
+const { getStaffTenantMutationClient } = require("../utils/tenant-route-database");
 const { validateBody } = require("../validators/common");
 const {
   foodOrderBillAuditSchema,
@@ -49,6 +50,18 @@ const logoUpload = multer({
 });
 
 router.use(requireStaffAuth, requireFoodModule, requireStaffManagerAccess);
+router.use(async (req, res, next) => {
+  try {
+    req.tenantBillingDatabase = await getStaffTenantMutationClient(req, supabase);
+    return next();
+  } catch (error) {
+    return next(error);
+  }
+});
+
+function requestDatabase(req) {
+  return req.tenantBillingDatabase || supabase;
+}
 
 function actorFromRequest(req) {
   return {
@@ -120,10 +133,10 @@ router.get("/format", async (req, res) => {
     if (!hotelSlug) {
       return res.status(403).json({ success: false, message: "Hotel scope is missing" });
     }
-    const format = await getFoodBillFormat({ supabaseClient: supabase, hotelSlug });
+    const format = await getFoodBillFormat({ supabaseClient: requestDatabase(req), hotelSlug });
     const preview = req.query.preview === "true"
       ? await getLatestFoodBillPreview({
-          supabaseClient: supabase,
+          supabaseClient: requestDatabase(req),
           hotelSlug,
           actor: actorFromRequest(req)
         })
@@ -142,7 +155,7 @@ router.put("/format", validateBody(foodOrderBillFormatSchema), async (req, res) 
     }
     const actor = actorFromRequest(req);
     const format = await saveFoodBillFormat({
-      supabaseClient: supabase,
+      supabaseClient: requestDatabase(req),
       hotelSlug,
       input: req.validatedBody,
       actorId: actor.id,
@@ -168,7 +181,7 @@ router.post(
         return res.status(403).json({ success: false, message: "Hotel scope is missing" });
       }
       const bill = await getLatestFoodBillPreview({
-        supabaseClient: supabase,
+        supabaseClient: requestDatabase(req),
         hotelSlug,
         actor: actorFromRequest(req),
         formatOverride: req.validatedBody
@@ -194,7 +207,7 @@ router.post("/format/reset", async (req, res) => {
     }
     const actor = actorFromRequest(req);
     const format = await resetFoodBillFormat({
-      supabaseClient: supabase,
+      supabaseClient: requestDatabase(req),
       hotelSlug,
       actorId: actor.id,
       actorRole: actor.role
@@ -217,7 +230,7 @@ router.post("/format/test-print", async (req, res) => {
     }
     const actor = actorFromRequest(req);
     await writeFoodBillAudit({
-      supabaseClient: supabase,
+      supabaseClient: requestDatabase(req),
       hotelSlug,
       action: "food_bill_test_printed",
       actorId: actor.id,
@@ -272,7 +285,7 @@ router.post("/format/logo", handleLogoUpload, async (req, res) => {
       .getPublicUrl(storagePath);
     const actor = actorFromRequest(req);
     const format = await saveFoodBillFormat({
-      supabaseClient: supabase,
+      supabaseClient: requestDatabase(req),
       hotelSlug,
       input: {
         logoUrl: publicData.publicUrl,
@@ -283,7 +296,7 @@ router.post("/format/logo", handleLogoUpload, async (req, res) => {
       actorRole: actor.role
     });
     await writeFoodBillAudit({
-      supabaseClient: supabase,
+      supabaseClient: requestDatabase(req),
       hotelSlug,
       action: "food_bill_logo_changed",
       actorId: actor.id,
@@ -312,7 +325,7 @@ router.delete("/format/logo", async (req, res) => {
     if (!hotelSlug) {
       return res.status(403).json({ success: false, message: "Hotel scope is missing" });
     }
-    const current = await getFoodBillFormat({ supabaseClient: supabase, hotelSlug });
+    const current = await getFoodBillFormat({ supabaseClient: requestDatabase(req), hotelSlug });
     const propertyScope = await resolvePropertyStorageScope(supabase, hotelSlug);
     if (current.logoStoragePath && isPropertyStoragePath(current.logoStoragePath, propertyScope, {
       resource: "food-order-bill",
@@ -325,14 +338,14 @@ router.delete("/format/logo", async (req, res) => {
     }
     const actor = actorFromRequest(req);
     const format = await saveFoodBillFormat({
-      supabaseClient: supabase,
+      supabaseClient: requestDatabase(req),
       hotelSlug,
       input: { logoUrl: "", logoStoragePath: "", logoAltText: "" },
       actorId: actor.id,
       actorRole: actor.role
     });
     await writeFoodBillAudit({
-      supabaseClient: supabase,
+      supabaseClient: requestDatabase(req),
       hotelSlug,
       action: "food_bill_logo_removed",
       actorId: actor.id,
@@ -356,7 +369,7 @@ router.get("/orders/:id", async (req, res) => {
       });
     }
     const result = await getFoodOrderBill({
-      supabaseClient: supabase,
+      supabaseClient: requestDatabase(req),
       hotelSlug,
       orderId,
       actor: actorFromRequest(req),
@@ -393,7 +406,7 @@ router.post(
         });
       }
       const bill = await reprintFoodOrderBill({
-        supabaseClient: supabase,
+        supabaseClient: requestDatabase(req),
         hotelSlug,
         orderId,
         actor: actorFromRequest(req),
@@ -430,7 +443,7 @@ router.post(
         });
       }
       const result = await getFoodOrderBill({
-        supabaseClient: supabase,
+        supabaseClient: requestDatabase(req),
         hotelSlug,
         orderId,
         actor: actorFromRequest(req),
@@ -449,7 +462,7 @@ router.post(
         bill_test_printed: "food_bill_test_printed"
       };
       await writeFoodBillAudit({
-        supabaseClient: supabase,
+        supabaseClient: requestDatabase(req),
         hotelSlug,
         action: actionMap[req.validatedBody.action],
         actorId: actor.id,

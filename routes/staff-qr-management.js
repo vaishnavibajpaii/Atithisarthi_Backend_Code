@@ -1,5 +1,8 @@
 const express = require("express");
 const { supabase } = require("../utils/supabase");
+const { env } = require("../config/env");
+const { getStaffTenantMutationClient } = require("../utils/tenant-route-database");
+const { getTenantRequestScope } = require("../utils/tenant-request-context");
 const logger = require("../utils/logger");
 const { requireStaffAuth, requireStaffManagerAccess } = require("../middleware/require-staff-auth");
 const { requireHotelFeature, resolveStaffHotelSlug } = require("../middleware/require-hotel-feature");
@@ -48,8 +51,11 @@ async function fetchActiveToken(hotelSlug, tableId) {
 }
 
 async function recordQrManagementAudit({ hotelSlug, tableId, tokenId, eventType, req }) {
-  const { error } = await supabase.from("qr_security_events").insert([{
-    hotel_slug: hotelSlug,
+  const database = await getStaffTenantMutationClient(req, supabase);
+  const scope = env.tenantRuntimeWritesEnabled ? getTenantRequestScope(req) : null;
+  const { error } = await database.from("qr_security_events").insert([{
+    ...(scope ? { tenant_id: scope.tenantId, property_id: scope.propertyId } : {}),
+    hotel_slug: scope?.propertySlug || hotelSlug,
     restaurant_table_id: tableId,
     actor_type: "staff",
     actor_reference: String(req.staffUser?.sub || req.staffUser?.id || ""),
@@ -67,8 +73,11 @@ async function createToken({ hotelSlug, tableId, req }) {
   if (latest.error && !isMissingSecureQrSchema(latest.error)) throw latest.error;
   const nextVersion = Number(latest.data?.[0]?.token_version || 0) + 1;
   const rawToken = generateOpaqueQrToken();
-  const inserted = await supabase.from("restaurant_table_qr_tokens").insert([{
-    hotel_slug: hotelSlug,
+  const database = await getStaffTenantMutationClient(req, supabase);
+  const scope = env.tenantRuntimeWritesEnabled ? getTenantRequestScope(req) : null;
+  const inserted = await database.from("restaurant_table_qr_tokens").insert([{
+    ...(scope ? { tenant_id: scope.tenantId, property_id: scope.propertyId } : {}),
+    hotel_slug: scope?.propertySlug || hotelSlug,
     restaurant_table_id: tableId,
     token_hash: hashSecret(rawToken),
     token_prefix: safeSecretPrefix(rawToken),
@@ -106,7 +115,8 @@ async function returnPrintableToken(req, res, { rotate = false } = {}) {
   if (active.error) throw active.error;
   if (rotate && active.data) {
     const now = new Date().toISOString();
-    const revoked = await supabase.from("restaurant_table_qr_tokens")
+    const database = await getStaffTenantMutationClient(req, supabase);
+    const revoked = await database.from("restaurant_table_qr_tokens")
       .update({ is_active: false, revoked_at: now, rotated_at: now })
       .eq("id", active.data.id).eq("hotel_slug", context.hotelSlug).eq("restaurant_table_id", context.row.id);
     if (revoked.error) throw revoked.error;
@@ -203,7 +213,8 @@ router.post("/tables/:id/qr/revoke", requireStaffAuth, requireStaffManagerAccess
     const active = await fetchActiveToken(context.hotelSlug, context.row.id);
     if (active.error) throw active.error;
     if (!active.data) return res.json({ success: true, message: "This table has no active QR token." });
-    const revoked = await supabase.from("restaurant_table_qr_tokens")
+    const database = await getStaffTenantMutationClient(req, supabase);
+    const revoked = await database.from("restaurant_table_qr_tokens")
       .update({ is_active: false, revoked_at: new Date().toISOString() })
       .eq("id", active.data.id).eq("hotel_slug", context.hotelSlug).eq("restaurant_table_id", context.row.id);
     if (revoked.error) throw revoked.error;

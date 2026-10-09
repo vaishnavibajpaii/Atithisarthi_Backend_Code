@@ -1,6 +1,7 @@
 const crypto = require("crypto");
 const express = require("express");
 const { supabase } = require("../utils/supabase");
+const { getStaffTenantMutationClient } = require("../utils/tenant-route-database");
 const { requireStaffAuth } = require("../middleware/require-staff-auth");
 const { requireHotelFeature, resolveStaffHotelSlug } = require("../middleware/require-hotel-feature");
 const { validateBody } = require("../validators/common");
@@ -151,7 +152,8 @@ router.patch(
         note: req.validatedBody.note || "",
         reason: req.validatedBody.reason || ""
       }));
-      const { data: rpcData, error: rpcError } = await supabase.rpc("correct_secure_qr_submission_staff", {
+      const database = await getStaffTenantMutationClient(req, supabase);
+      const { data: rpcData, error: rpcError } = await database.rpc("correct_secure_qr_submission_staff", {
         p_hotel_slug: hotelSlug,
         p_submission_reference: publicReference,
         p_expected_version: req.validatedBody.expectedVersion,

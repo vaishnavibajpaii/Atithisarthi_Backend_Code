@@ -3,6 +3,7 @@ const { supabase } = require("../utils/supabase");
 const { publicReservationLimiter } = require("../middleware/public-rate-limiters");
 const { createNotificationEventSafely } = require("../utils/notifications");
 const { ensurePublicHotelAccess } = require("../utils/public-hotel-access");
+const { getTenantMutationClient } = require("../utils/tenant-route-database");
 const { ensureHotelFeatureEnabled } = require("../middleware/require-hotel-feature");
 
 // ✅ Added imports
@@ -41,12 +42,15 @@ router.post("/", publicReservationLimiter, validateBody(reservationSchema), asyn
 
     // (Optional: manual validation can be removed since schema handles it)
 
-    const { data, error } = await supabase
+    const database = getTenantMutationClient(req, supabase);
+    const { data, error } = await database
       .from("reservations")
       .insert([
         {
+          tenant_id: hotelAccess.tenant_id,
+          property_id: hotelAccess.id,
           hotel_name: hotelName || "Unknown Hotel",
-          hotel_slug: hotelSlug || null,
+          hotel_slug: hotelAccess.slug,
           name,
           phone,
           date,
@@ -64,6 +68,9 @@ router.post("/", publicReservationLimiter, validateBody(reservationSchema), asyn
     }
 
     void createNotificationEventSafely({
+      databaseClient: database,
+      tenantId: hotelAccess.tenant_id,
+      propertyId: hotelAccess.id,
       hotelSlug: data.hotel_slug || hotelSlug || null,
       sourceType: "reservation",
       sourceId: data.id,

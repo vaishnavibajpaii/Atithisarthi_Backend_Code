@@ -2,6 +2,9 @@ const crypto = require("crypto");
 const express = require("express");
 const rateLimit = require("express-rate-limit");
 const { supabase } = require("../utils/supabase");
+const { env } = require("../config/env");
+const { getTenantMutationClient } = require("../utils/tenant-route-database");
+const { getTenantRequestScope } = require("../utils/tenant-request-context");
 const logger = require("../utils/logger");
 const ordersRoute = require("./orders");
 const { validateBody } = require("../validators/common");
@@ -211,6 +214,13 @@ async function getBoundSession(req, res, expectedContext = null) {
     res.status(401).json({ success: false, code: "QR_SESSION_INVALID", message: "Your QR ordering session has expired. Please scan the table QR again." });
     return null;
   }
+  if (!expectedContext) {
+    const hotelAccess = await ensurePublicHotelAccess(req, res, session.hotel_slug, {
+      notFoundMessage: "QR ordering is unavailable.",
+      forbiddenMessage: "This QR session does not belong to this restaurant."
+    });
+    if (!hotelAccess) return null;
+  }
   return { ...session, rawSessionToken, sessionHash };
 }
 
@@ -244,7 +254,8 @@ router.get("/:token/context", qrContextLimiter, async (req, res) => {
       .eq("hotel_slug", context.qrToken.hotel_slug)
       .maybeSingle();
     if (hotelResult.error) throw hotelResult.error;
-    void supabase.from("restaurant_table_qr_tokens")
+    const database = getTenantMutationClient(req, supabase);
+    void database.from("restaurant_table_qr_tokens")
       .update({ last_used_at: new Date().toISOString() })
       .eq("id", context.qrToken.id);
     res.set("Cache-Control", "no-store");
@@ -275,8 +286,11 @@ router.post("/:token/session", qrWriteLimiter, async (req, res) => {
     const sessionToken = generateCustomerSessionToken();
     const csrfToken = generateCsrfToken();
     const expiresAt = new Date(Date.now() + QR_SESSION_TTL_MS).toISOString();
-    const { data, error } = await supabase.from("qr_customer_sessions").insert([{
-      hotel_slug: context.qrToken.hotel_slug,
+    const database = getTenantMutationClient(req, supabase);
+    const scope = env.tenantRuntimeWritesEnabled ? getTenantRequestScope(req) : null;
+    const { data, error } = await database.from("qr_customer_sessions").insert([{
+      ...(scope ? { tenant_id: scope.tenantId, property_id: scope.propertyId } : {}),
+      hotel_slug: scope?.propertySlug || context.qrToken.hotel_slug,
       restaurant_table_id: context.qrToken.restaurant_table_id,
       qr_token_id: context.qrToken.id,
       qr_token_version: context.qrToken.token_version,
@@ -374,7 +388,8 @@ router.post("/:token/orders", qrWriteLimiter, validateBody(secureQrOrderSchema),
       paymentMethod: req.validatedBody.paymentMethod
     });
     const idempotencyKeyHash = hashSecret(req.validatedBody.clientRequestId);
-    const { data: rpcData, error: rpcError } = await supabase.rpc("submit_secure_qr_table_order", {
+    const database = getTenantMutationClient(req, supabase);
+    const { data: rpcData, error: rpcError } = await database.rpc("submit_secure_qr_table_order", {
       p_token_hash: context.tokenHash,
       p_session_hash: session.sessionHash,
       p_idempotency_key_hash: idempotencyKeyHash,
@@ -497,7 +512,8 @@ router.patch("/submissions/:publicReference", qrWriteLimiter, validateBody(secur
       items: req.validatedBody.items,
       note: req.validatedBody.note || ""
     });
-    const { data: rpcData, error: rpcError } = await supabase.rpc("edit_secure_qr_submission", {
+    const database = getTenantMutationClient(req, supabase);
+    const { data: rpcData, error: rpcError } = await database.rpc("edit_secure_qr_submission", {
       p_session_hash: session.sessionHash,
       p_submission_reference: publicReference,
       p_expected_version: req.validatedBody.expectedRoundVersion,

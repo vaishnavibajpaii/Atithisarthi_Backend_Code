@@ -238,8 +238,9 @@ function verifyTenantAndPermissionContracts() {
   assert.match(staffRoute, /requireStaffManagerAccess/);
   assert.match(staffRoute, /\.eq\("hotel_slug", hotelSlug\)/);
   assert.match(adminRoute, /resolveAdminBookingHotelSlug/);
-  assert.match(factory, /safeStorageSegment\(hotelSlug\)/);
-  assert.match(factory, /expectedPrefix/);
+  assert.match(factory, /resolvePropertyStorageScope\(supabaseClient, hotelSlug\)/);
+  assert.match(factory, /buildPropertyStoragePath\([\s\S]*propertyScope,[\s\S]*"room-checkout-bill"/);
+  assert.match(factory, /isPropertyStoragePath\([\s\S]*allowLegacy: true/);
   assert.match(factory, /getImageDimensions/);
   assert.match(factory, /Logo must be 2 MB or smaller/);
   assert.match(factory, /validateBody\(roomCheckoutBillReprintSchema\)/);

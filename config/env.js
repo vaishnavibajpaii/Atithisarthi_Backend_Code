@@ -40,6 +40,8 @@ port: Number(getEnv("PORT", "10000")),
     getEnv("TENANT_RUNTIME_STAFF_ORDERING_SETTINGS_ENABLED", "false") === "true",
   tenantRuntimeStaffSessionEnabled:
     getEnv("TENANT_RUNTIME_STAFF_SESSION_ENABLED", "false") === "true",
+  tenantRuntimeWritesEnabled:
+    getEnv("TENANT_RUNTIME_WRITES_ENABLED", "false") === "true",
   tenantDatabaseUrl: getEnv("TENANT_DATABASE_URL", ""),
   tenantDatabasePoolMax: Number(getEnv("TENANT_DATABASE_POOL_MAX", "10")),
   tenantDatabaseIdleTimeoutMs: Number(

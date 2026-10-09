@@ -8,7 +8,8 @@ process.env.SUPABASE_SERVICE_ROLE_KEY ||= "not-used";
 process.env.JWT_SECRET ||= "not-used";
 
 const {
-  fetchTenantStaffOrderingSettingsBundle
+  fetchTenantStaffOrderingSettingsBundle,
+  updateTenantStaffPaymentMethods
 } = require("../utils/tenant-staff-ordering-settings");
 const {
   buildStaffOrderingSettingsPayload
@@ -217,5 +218,88 @@ test("duplicate canonical settings rows fail closed", async () => {
       { transactionRunner: fake.runner }
     ),
     { code: "TENANT_STAFF_ORDERING_DATA_CONFLICT" }
+  );
+});
+
+test("payment-method update uses one canonical writable tenant transaction", async () => {
+  const fake = createTransactionRunner([{
+    rows: [{
+      hotel_slug: SCOPE.propertySlug,
+      secure_online_payment_enabled: true,
+      cash_on_delivery_enabled: false,
+      manual_upi_payment_enabled: true,
+      updated_at: "2026-10-07T00:00:00.000Z"
+    }]
+  }]);
+
+  const result = await updateTenantStaffPaymentMethods(
+    SCOPE,
+    SCOPE.propertySlug,
+    {
+      secureOnlinePaymentEnabled: true,
+      cashOnDeliveryEnabled: false,
+      manualUpiPaymentEnabled: true
+    },
+    { transactionRunner: fake.runner }
+  );
+
+  assert.equal(result.hotel_slug, SCOPE.propertySlug);
+  assert.equal(result.cash_on_delivery_enabled, false);
+  assert.deepEqual(fake.calls[0], {
+    type: "transaction",
+    context: {
+      tenantId: SCOPE.tenantId,
+      propertyId: SCOPE.propertyId
+    },
+    options: undefined
+  });
+  const query = fake.calls.find((call) => call.type === "query");
+  assert.deepEqual(query.params, [
+    SCOPE.tenantId,
+    SCOPE.propertyId,
+    SCOPE.propertySlug,
+    true,
+    false,
+    true
+  ]);
+  assert.match(query.sql, /INSERT INTO public\.hotel_ordering_settings/);
+  assert.match(query.sql, /ON CONFLICT \(hotel_slug\) DO UPDATE/);
+  assert.match(query.sql, /hotel_ordering_settings\.tenant_id = \$1::uuid/);
+  assert.match(query.sql, /hotel_ordering_settings\.property_id = \$2::bigint/);
+  assert.match(query.sql, /RETURNING hotel_slug/);
+});
+
+test("payment-method update rejects context mismatch before DB use", async () => {
+  let called = false;
+  await assert.rejects(
+    updateTenantStaffPaymentMethods(
+      SCOPE,
+      "the-food-garden",
+      {},
+      {
+        transactionRunner: async () => {
+          called = true;
+        }
+      }
+    ),
+    { code: "TENANT_STAFF_ORDERING_SCOPE_CONFLICT" }
+  );
+  assert.equal(called, false);
+});
+
+test("payment-method update fails closed when scoped upsert returns no row", async () => {
+  const fake = createTransactionRunner([{ rows: [] }]);
+  await assert.rejects(
+    updateTenantStaffPaymentMethods(
+      SCOPE,
+      SCOPE.propertySlug,
+      {
+        secureOnlinePaymentEnabled: true,
+        cashOnDeliveryEnabled: true,
+        manualUpiPaymentEnabled: true
+      },
+      { transactionRunner: fake.runner }
+    ),
+    { code: "TENANT_STAFF_ORDERING_WRITE_CONFLICT" }
   );
 });

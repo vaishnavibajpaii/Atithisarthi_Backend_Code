@@ -141,10 +141,14 @@ function createAdminCombinedCheckoutContextResolver({ supabaseClient } = {}) {
 
 function createRoomCombinedCheckoutHandler({
   supabaseClient,
+  resolveDatabaseClient = null,
   resolveRequestContext,
   settleCheckout = settleRoomCombinedCheckout
 } = {}) {
-  if (!supabaseClient || typeof supabaseClient.rpc !== "function") {
+  if (
+    typeof resolveDatabaseClient !== "function" &&
+    (!supabaseClient || typeof supabaseClient.rpc !== "function")
+  ) {
     throw new TypeError("Supabase client with rpc() is required");
   }
 
@@ -177,9 +181,16 @@ function createRoomCombinedCheckoutHandler({
         });
       }
 
+      const databaseClient = typeof resolveDatabaseClient === "function"
+        ? await resolveDatabaseClient(req, context)
+        : supabaseClient;
+      if (!databaseClient || typeof databaseClient.rpc !== "function") {
+        throw new TypeError("Tenant database client with rpc() is required");
+      }
+
       const body = req.validatedBody || {};
       const result = await settleCheckout({
-        supabaseClient,
+        supabaseClient: databaseClient,
         hotelSlug: context.hotelSlug,
         bookingId: req.params?.id,
         amount: body.amount,
@@ -199,10 +210,10 @@ function createRoomCombinedCheckoutHandler({
       }
 
       let checkoutBill = null;
-      if (typeof supabaseClient.from === "function") {
+      if (typeof databaseClient.from === "function") {
         try {
           const billResult = await getCheckoutBill({
-            supabaseClient,
+            supabaseClient: databaseClient,
             hotelSlug: context.hotelSlug,
             bookingId: req.params?.id,
             actor: {

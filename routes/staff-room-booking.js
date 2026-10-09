@@ -17,6 +17,7 @@ const {
 const { roomRefundSchema } = require("../validators/room-tax");
 const { env } = require("../config/env");
 const { supabase } = require("../utils/supabase");
+const { getStaffTenantMutationClient } = require("../utils/tenant-route-database");
 const {
   getRoomDefaultNightlyPrice,
   resolveRoomBookingPricing
@@ -92,11 +93,27 @@ const requireStaffCombinedBilling = requireHotelFeature("combined_billing", {
 const staffRoomCombinedCheckoutHandler =
   createRoomCombinedCheckoutHandler({
     supabaseClient: supabase,
+    resolveDatabaseClient: (req) => (
+      req.tenantMutationDatabase ||
+      getStaffTenantMutationClient(req, supabase)
+    ),
     resolveRequestContext: resolveStaffCombinedCheckoutContext
   });
 
 router.use(requireStaffAuth);
 router.use(requireStaffRoomModule);
+router.use(async (req, res, next) => {
+  try {
+    req.tenantMutationDatabase = await getStaffTenantMutationClient(req, supabase);
+    return next();
+  } catch (error) {
+    return next(error);
+  }
+});
+
+function mutationDatabase(req) {
+  return req.tenantMutationDatabase || supabase;
+}
 
 function normalizeText(value = "", maxLength = 120) {
   return typeof value === "string"
@@ -693,7 +710,7 @@ router.put(
         updated_by: req.staffUser?.sub || req.staffUser?.id || null,
         updated_at: new Date().toISOString()
       };
-      const query = supabase.from("hotel_room_advance_policies");
+      const query = mutationDatabase(req).from("hotel_room_advance_policies");
       const result = current.recordExists
         ? await query.update(payload).eq("hotel_slug", hotelSlug).eq("version", current.version).select().maybeSingle()
         : await query.insert([payload]).select().single();
@@ -1384,7 +1401,7 @@ router.post("/bookings", validateBody(staffRoomBookingCreateSchema), async (req,
         });
       }
       const actorId = req.staffUser?.sub || req.staffUser?.id || "";
-      const { data: atomicResult, error: atomicError } = await supabase.rpc(
+      const { data: atomicResult, error: atomicError } = await mutationDatabase(req).rpc(
         "create_room_booking_with_advance",
         {
           p_hotel_slug: hotelSlug,
@@ -1457,7 +1474,7 @@ router.post("/bookings", validateBody(staffRoomBookingCreateSchema), async (req,
       });
     }
 
-    const { data, error } = await supabase
+    const { data, error } = await mutationDatabase(req)
       .from("room_bookings")
       .insert([bookingPayload])
       .select()
@@ -1465,7 +1482,7 @@ router.post("/bookings", validateBody(staffRoomBookingCreateSchema), async (req,
 
     if (error) {
       if (idempotency.key && isRoomIdempotencyConflict(error)) {
-        const existingBooking = await findRoomBookingByIdempotency({ supabaseClient: supabase, hotelSlug, key: idempotency.key });
+        const existingBooking = await findRoomBookingByIdempotency({ supabaseClient: mutationDatabase(req), hotelSlug, key: idempotency.key });
         if (existingBooking) {
           return res.json({ success: true, idempotent: true, message: "Room booking already created", booking: buildStaffBookingResponse(existingBooking, isStaffManager(req)) });
         }
@@ -1612,7 +1629,7 @@ router.patch(
         }
       }
 
-      const { data, error } = await supabase
+      const { data, error } = await mutationDatabase(req)
         .from("room_bookings")
         .update(buildBookingStatusUpdatePayload(bookingStatus, notes, currentBooking))
         .eq("id", bookingId)
@@ -1976,7 +1993,7 @@ router.post(
       );
       if (paymentStatus === "paid") {
         const actorId = req.staffUser?.sub || req.staffUser?.id || null;
-        const { data: atomicResult, error: atomicError } = await supabase.rpc(
+        const { data: atomicResult, error: atomicError } = await mutationDatabase(req).rpc(
           "record_room_booking_payment",
           {
             p_hotel_slug: hotelSlug,
@@ -2046,7 +2063,7 @@ router.post(
         });
       }
 
-      const { data: payment, error: paymentError } = await supabase
+      const { data: payment, error: paymentError } = await mutationDatabase(req)
         .from("room_booking_payments")
         .insert([
           {
@@ -2083,7 +2100,7 @@ router.post(
         totalAmount: currentTotalAmount
       });
 
-      const { data: updatedBooking, error: bookingUpdateError } = await supabase
+      const { data: updatedBooking, error: bookingUpdateError } = await mutationDatabase(req)
         .from("room_bookings")
         .update({
           advance_paid: nextAdvancePaid,
@@ -2097,7 +2114,7 @@ router.post(
         .maybeSingle();
 
       if (bookingUpdateError || !updatedBooking) {
-        await supabase
+        await mutationDatabase(req)
           .from("room_booking_payments")
           .delete()
           .eq("id", createdPayment.id)
@@ -2196,7 +2213,7 @@ router.post(
       }
       const body = req.validatedBody;
       const actorId = req.staffUser?.sub || req.staffUser?.id || null;
-      const { data, error } = await supabase.rpc("record_room_booking_refund", {
+      const { data, error } = await mutationDatabase(req).rpc("record_room_booking_refund", {
         p_hotel_slug: hotelSlug,
         p_booking_id: bookingId,
         p_amount: body.amount,

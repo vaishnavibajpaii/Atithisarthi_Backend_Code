@@ -71,6 +71,7 @@ function safeFileStem(value = "") {
 
 function createRoomCheckoutBillRouter({
   supabaseClient,
+  resolveDatabaseClient = null,
   authMiddleware,
   configureMiddleware = null,
   resolveHotelSlug,
@@ -80,6 +81,12 @@ function createRoomCheckoutBillRouter({
   const router = express.Router();
   const allow = configureMiddleware || ((req, res, next) => next());
   router.use(authMiddleware);
+
+  async function getDatabaseClient(req) {
+    return typeof resolveDatabaseClient === "function"
+      ? resolveDatabaseClient(req)
+      : supabaseClient;
+  }
 
   async function getRequestHotelSlug(req, bookingScoped = false) {
     const value = bookingScoped
@@ -111,7 +118,10 @@ function createRoomCheckoutBillRouter({
       if (!hotelSlug) {
         return res.status(403).json({ success: false, message: "Hotel scope is missing" });
       }
-      const format = await getBillFormat({ supabaseClient, hotelSlug });
+      const format = await getBillFormat({
+        supabaseClient: await getDatabaseClient(req),
+        hotelSlug
+      });
       return res.json({ success: true, hotelSlug, format });
     } catch (error) {
       return handleRouteError(res, error, "Checkout bill format fetch error");
@@ -130,7 +140,7 @@ function createRoomCheckoutBillRouter({
         }
         const actor = resolveActor(req);
         const format = await saveBillFormat({
-          supabaseClient,
+          supabaseClient: await getDatabaseClient(req),
           hotelSlug,
           input: req.validatedBody,
           actorId: actor.id,
@@ -155,7 +165,7 @@ function createRoomCheckoutBillRouter({
       }
       const actor = resolveActor(req);
       const format = await resetBillFormat({
-        supabaseClient,
+        supabaseClient: await getDatabaseClient(req),
         hotelSlug,
         actorId: actor.id,
         actorRole: actor.role
@@ -214,7 +224,7 @@ function createRoomCheckoutBillRouter({
         .getPublicUrl(storagePath);
       const actor = resolveActor(req);
       const format = await saveBillFormat({
-        supabaseClient,
+        supabaseClient: await getDatabaseClient(req),
         hotelSlug,
         input: {
           logoUrl: publicData.publicUrl,
@@ -226,7 +236,7 @@ function createRoomCheckoutBillRouter({
       });
 
       await writeAuditEvent({
-        supabaseClient,
+        supabaseClient: await getDatabaseClient(req),
         hotelSlug,
         action: "bill_logo_changed",
         actorId: actor.id,
@@ -255,7 +265,10 @@ function createRoomCheckoutBillRouter({
       if (!hotelSlug) {
         return res.status(403).json({ success: false, message: "Hotel scope is missing" });
       }
-      const current = await getBillFormat({ supabaseClient, hotelSlug });
+      const current = await getBillFormat({
+        supabaseClient: await getDatabaseClient(req),
+        hotelSlug
+      });
       const propertyScope = await resolvePropertyStorageScope(supabaseClient, hotelSlug);
       if (current.logoStoragePath && isPropertyStoragePath(current.logoStoragePath, propertyScope, {
         resource: "room-checkout-bill",
@@ -269,14 +282,14 @@ function createRoomCheckoutBillRouter({
 
       const actor = resolveActor(req);
       const format = await saveBillFormat({
-        supabaseClient,
+        supabaseClient: await getDatabaseClient(req),
         hotelSlug,
         input: { logoUrl: "", logoStoragePath: "", logoAltText: "" },
         actorId: actor.id,
         actorRole: actor.role
       });
       await writeAuditEvent({
-        supabaseClient,
+        supabaseClient: await getDatabaseClient(req),
         hotelSlug,
         action: "bill_logo_removed",
         actorId: actor.id,
@@ -300,7 +313,7 @@ function createRoomCheckoutBillRouter({
       }
       const actor = resolveActor(req);
       const result = await getCheckoutBill({
-        supabaseClient,
+        supabaseClient: await getDatabaseClient(req),
         hotelSlug,
         bookingId: sanitizeText(req.params.id, 80),
         actor,
@@ -339,7 +352,7 @@ function createRoomCheckoutBillRouter({
         }
         const actor = resolveActor(req);
         const bill = await reprintCheckoutBill({
-          supabaseClient,
+          supabaseClient: await getDatabaseClient(req),
           hotelSlug,
           bookingId: sanitizeText(req.params.id, 80),
           actor,
@@ -374,7 +387,7 @@ function createRoomCheckoutBillRouter({
       }
       const actor = resolveActor(req);
       await writeAuditEvent({
-        supabaseClient,
+        supabaseClient: await getDatabaseClient(req),
         hotelSlug,
         action,
         actorId: actor.id,

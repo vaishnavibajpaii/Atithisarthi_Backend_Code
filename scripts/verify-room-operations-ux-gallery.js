@@ -20,7 +20,11 @@ function verify(name, test) {
 
 const staffRoute = read("backend/routes/staff-room-management.js");
 const publicRoute = read("backend/routes/public-room-booking.js");
+const publicPresentation = read("backend/utils/public-room-presentation.js");
 const migration = read("backend/scripts/upgrade-room-operations-ux-gallery.sql");
+const task3StorageCompatibility = read(
+  "backend/scripts/task3g-room-image-storage-path-compatibility.sql"
+);
 const rollback = read("backend/scripts/rollback-room-operations-ux-gallery.sql");
 const staffHtml = read("frontend/staff-orders.html");
 const staffController = read("frontend/js/staff-orders.js");
@@ -50,8 +54,8 @@ verify("Room-image uploads validate actual type, byte dimensions, size, and tena
   assert.match(staffRoute, /ROOM_IMAGE_TYPES/);
   assert.match(staffRoute, /fileSize: 8 \* 1024 \* 1024/);
   assert.match(staffRoute, /getImageDimensions\(req\.file\.buffer, req\.file\.mimetype\)/);
-  assert.match(staffRoute, /safeHotelSlug !== hotelSlug/);
-  assert.match(staffRoute, /\$\{hotelSlug\}\/room-images\/\$\{target\.type\}-\$\{target\.targetId\}/);
+  assert.match(staffRoute, /resolvePropertyStorageScope\(supabase, hotelSlug\)/);
+  assert.match(staffRoute, /buildPropertyStoragePath\([\s\S]*propertyScope,[\s\S]*room-images/);
   assert.match(staffRoute, /cacheControl: "31536000"/);
 });
 
@@ -76,6 +80,10 @@ verify("Database model enforces one target, tenant ownership, path scope, active
   ]) assert(migration.includes(marker), `Missing migration guard: ${marker}`);
   assert.match(migration, /grant execute on function public\.reorder_room_images[\s\S]*to service_role/);
   assert.match(migration, /grant execute on function public\.delete_room_image[\s\S]*to service_role/);
+  assert.match(task3StorageCompatibility, /security invoker/);
+  assert.match(task3StorageCompatibility, /v_canonical_prefix/);
+  assert.match(task3StorageCompatibility, /v_legacy_prefix/);
+  assert.match(task3StorageCompatibility, /ROOM_IMAGE_OWNER_NOT_VISIBLE/);
 });
 
 verify("Rollback signatures match the migration RPC signatures", () => {
@@ -97,10 +105,10 @@ verify("Image metadata and reorder validators reject unsafe or ambiguous input",
 verify("Public gallery loads active managed images only and preserves legacy arrays", () => {
   assert.match(publicRoute, /from\("room_images"\)[\s\S]*\.eq\("hotel_slug", hotelSlug\)\.eq\("is_active", true\)/);
   assert.match(publicRoute, /combinePublicRoomImages/);
-  assert.match(publicRoute, /room\.images_json/);
-  assert.match(publicRoute, /roomType\?\.images_json/);
+  assert.match(publicPresentation, /room\.images_json/);
+  assert.match(publicPresentation, /roomType\?\.images_json/);
   assert(!publicRoute.includes("storage_path"));
-  assert.match(publicRoute, /galleryImages,[\s\S]*primaryImage/);
+  assert.match(publicPresentation, /galleryImages,[\s\S]*primaryImage/);
 });
 
 verify("Room shell uses role-aware sections and reload-free deep links", () => {

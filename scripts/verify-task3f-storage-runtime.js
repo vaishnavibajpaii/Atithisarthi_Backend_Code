@@ -67,7 +67,7 @@ async function run() {
   }
   const baseUrl = normalizeApprovedBaseUrl(process.env.TASK3F_STORAGE_RUNTIME_BASE_URL || DEFAULT_BASE_URL);
   const [health, readiness] = await Promise.all([
-    requestJson(`${baseUrl}/`),
+    requestJson(`${baseUrl}/api/health`),
     requestJson(`${baseUrl}/api/readiness`)
   ]);
   if (health.response.status !== 200 || health.payload?.success !== true) {

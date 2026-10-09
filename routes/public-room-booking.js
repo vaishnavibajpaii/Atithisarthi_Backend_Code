@@ -2,6 +2,7 @@ const express = require("express");
 const { ZodError } = require("zod");
 const { ensurePublicHotelAccess } = require("../utils/public-hotel-access");
 const { env } = require("../config/env");
+const { getTenantMutationClient } = require("../utils/tenant-route-database");
 const { getTenantRequestScope } = require("../utils/tenant-request-context");
 const { publicRoomBookingLimiter } = require("../middleware/public-rate-limiters");
 const { validateBody, formatZodError } = require("../validators/common");
@@ -931,8 +932,11 @@ router.post(
         });
       }
 
+      const database = getTenantMutationClient(req, supabase);
+      const scope = env.tenantRuntimeWritesEnabled ? getTenantRequestScope(req) : null;
       const bookingPayload = {
-        hotel_slug: slug,
+        ...(scope ? { tenant_id: scope.tenantId, property_id: scope.propertyId } : {}),
+        hotel_slug: scope?.propertySlug || slug,
         room_id: roomId,
         guest_name: guestName,
         guest_phone: guestPhone,
@@ -969,7 +973,7 @@ router.post(
         }
       }
 
-      const { data, error } = await supabase
+      const { data, error } = await database
         .from("room_bookings")
         .insert([bookingPayload])
         .select()
@@ -978,7 +982,7 @@ router.post(
       if (error) {
         if (idempotency.key && isRoomIdempotencyConflict(error)) {
           const existingBooking = await findRoomBookingByIdempotency({
-            supabaseClient: supabase,
+            supabaseClient: database,
             hotelSlug: slug,
             key: idempotency.key
           });
@@ -1002,6 +1006,9 @@ router.post(
       }
 
       void createNotificationEventSafely({
+        databaseClient: database,
+        tenantId: scope?.tenantId,
+        propertyId: scope?.propertyId,
         hotelSlug: data.hotel_slug || slug,
         sourceType: "room_booking",
         sourceId: data.id,

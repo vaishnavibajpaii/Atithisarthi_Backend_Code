@@ -3,6 +3,7 @@ const { supabase } = require("../utils/supabase");
 const { publicInquiryLimiter } = require("../middleware/public-rate-limiters");
 const { createNotificationEventSafely } = require("../utils/notifications");
 const { ensurePublicHotelAccess } = require("../utils/public-hotel-access");
+const { getTenantMutationClient } = require("../utils/tenant-route-database");
 
 // ✅ Added imports
 const { validateBody } = require("../validators/common");
@@ -36,12 +37,15 @@ router.post("/", publicInquiryLimiter, validateBody(inquirySchema), async (req, 
 
     // (Optional: manual validation can be removed since schema handles it)
 
-    const { data, error } = await supabase
+    const database = getTenantMutationClient(req, supabase);
+    const { data, error } = await database
       .from("inquiries")
       .insert([
         {
+          tenant_id: hotelAccess.tenant_id,
+          property_id: hotelAccess.id,
           hotel_name: hotelName || "Unknown Hotel",
-          hotel_slug: hotelSlug || null,
+          hotel_slug: hotelAccess.slug,
           name,
           phone,
           event_type: eventType,
@@ -59,6 +63,9 @@ router.post("/", publicInquiryLimiter, validateBody(inquirySchema), async (req, 
     }
 
     void createNotificationEventSafely({
+      databaseClient: database,
+      tenantId: hotelAccess.tenant_id,
+      propertyId: hotelAccess.id,
       hotelSlug: data.hotel_slug || hotelSlug || null,
       sourceType: "inquiry",
       sourceId: data.id,

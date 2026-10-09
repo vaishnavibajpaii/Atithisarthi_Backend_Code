@@ -2,6 +2,7 @@
 
 const { requireStaffAuth, requireStaffManagerAccess } = require("../middleware/require-staff-auth");
 const { supabase } = require("../utils/supabase");
+const { getStaffTenantMutationClient } = require("../utils/tenant-route-database");
 const { createRoomCheckoutBillRouter } = require("./create-room-checkout-bill-router");
 
 async function resolveStaffBookingHotelSlug(req) {
@@ -21,6 +22,7 @@ async function resolveStaffBookingHotelSlug(req) {
 
 module.exports = createRoomCheckoutBillRouter({
   supabaseClient: supabase,
+  resolveDatabaseClient: (req) => getStaffTenantMutationClient(req, supabase),
   authMiddleware: requireStaffAuth,
   configureMiddleware: requireStaffManagerAccess,
   resolveHotelSlug: (req) => req.staffHotelSlug,

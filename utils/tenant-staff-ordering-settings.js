@@ -118,7 +118,73 @@ async function fetchTenantStaffOrderingSettingsBundle(
   );
 }
 
+async function updateTenantStaffPaymentMethods(
+  inputScope,
+  requestedSlug,
+  input = {},
+  options = {}
+) {
+  const scope = normalizeStaffOrderingScope(inputScope, requestedSlug);
+  const transactionRunner =
+    options.transactionRunner || withTenantTransaction;
+  const secureOnlinePaymentEnabled = input.secureOnlinePaymentEnabled === true;
+  const cashOnDeliveryEnabled = input.cashOnDeliveryEnabled === true;
+  const manualUpiPaymentEnabled = input.manualUpiPaymentEnabled === true;
+
+  return transactionRunner(
+    {
+      tenantId: scope.tenantId,
+      propertyId: scope.propertyId
+    },
+    async (client) => {
+      const result = await client.query(
+        `INSERT INTO public.hotel_ordering_settings (
+           tenant_id,
+           property_id,
+           hotel_slug,
+           secure_online_payment_enabled,
+           cash_on_delivery_enabled,
+           manual_upi_payment_enabled,
+           updated_at
+         )
+         VALUES ($1::uuid, $2::bigint, $3, $4, $5, $6, now())
+         ON CONFLICT (hotel_slug) DO UPDATE
+           SET secure_online_payment_enabled = EXCLUDED.secure_online_payment_enabled,
+               cash_on_delivery_enabled = EXCLUDED.cash_on_delivery_enabled,
+               manual_upi_payment_enabled = EXCLUDED.manual_upi_payment_enabled,
+               updated_at = now()
+         WHERE hotel_ordering_settings.tenant_id = $1::uuid
+           AND hotel_ordering_settings.property_id = $2::bigint
+           AND hotel_ordering_settings.hotel_slug = $3
+         RETURNING hotel_slug,
+                   secure_online_payment_enabled,
+                   cash_on_delivery_enabled,
+                   manual_upi_payment_enabled,
+                   updated_at`,
+        [
+          scope.tenantId,
+          scope.propertyId,
+          scope.propertySlug,
+          secureOnlinePaymentEnabled,
+          cashOnDeliveryEnabled,
+          manualUpiPaymentEnabled
+        ]
+      );
+
+      if (!Array.isArray(result?.rows) || result.rows.length !== 1) {
+        throw createTenantStaffOrderingError(
+          "TENANT_STAFF_ORDERING_WRITE_CONFLICT",
+          "Hotel payment settings could not be safely written in this tenant scope"
+        );
+      }
+
+      return result.rows[0];
+    }
+  );
+}
+
 module.exports = {
   fetchTenantStaffOrderingSettingsBundle,
-  normalizeStaffOrderingScope
+  normalizeStaffOrderingScope,
+  updateTenantStaffPaymentMethods
 };

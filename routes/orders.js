@@ -1,5 +1,8 @@
 const express = require("express");
 const { supabase } = require("../utils/supabase");
+const { env } = require("../config/env");
+const { getTenantMutationClient } = require("../utils/tenant-route-database");
+const { getTenantRequestScope } = require("../utils/tenant-request-context");
 const logger = require("../utils/logger");
 const { createNotificationEventSafely } = require("../utils/notifications");
 const {
@@ -452,13 +455,13 @@ function omitOrderColumns(columns = {}, columnNamesToOmit = []) {
   );
 }
 
-async function insertOrderRow(baseOrderRow, optionalOrderColumns = {}, logMeta = {}) {
+async function insertOrderRow(baseOrderRow, optionalOrderColumns = {}, logMeta = {}, databaseClient = supabase) {
   const hasOptionalOrderColumns = Object.keys(optionalOrderColumns).length > 0;
   const firstAttemptRow = hasOptionalOrderColumns
     ? { ...baseOrderRow, ...optionalOrderColumns }
     : baseOrderRow;
 
-  const firstAttempt = await supabase
+  const firstAttempt = await databaseClient
     .from("orders")
     .insert([firstAttemptRow])
     .select()
@@ -491,7 +494,7 @@ async function insertOrderRow(baseOrderRow, optionalOrderColumns = {}, logMeta =
     }
   );
 
-  return supabase
+  return databaseClient
     .from("orders")
     .insert([retryOrderRow])
     .select()
@@ -651,9 +654,12 @@ router.post("/", publicOrderLimiter, validateBody(orderSchema), async (req, res)
     // (Optional: You can now remove manual validation since schema handles it)
 
     // ✅ Insert into Supabase
+    const database = getTenantMutationClient(req, supabase);
+    const scope = env.tenantRuntimeWritesEnabled ? getTenantRequestScope(req) : null;
     const baseOrderRow = {
+      ...(scope ? { tenant_id: scope.tenantId, property_id: scope.propertyId } : {}),
       hotel_name: approvedHotelName,
-      hotel_slug: verifiedPricing.hotel.hotel_slug || hotelSlug || null,
+      hotel_slug: scope?.propertySlug || verifiedPricing.hotel.hotel_slug || hotelSlug || null,
       customer_name: customerName,
       customer_phone: customerPhone,
       customer_address: customerAddress || "",
@@ -681,12 +687,16 @@ router.post("/", publicOrderLimiter, validateBody(orderSchema), async (req, res)
     const { data, error } = await insertOrderRow(
       baseOrderRow,
       optionalOrderColumns,
-      requestLogMeta
+      requestLogMeta,
+      database
     );
 
     if (error) throw error;
 
     void createNotificationEventSafely({
+      databaseClient: database,
+      tenantId: scope?.tenantId,
+      propertyId: scope?.propertyId,
       hotelSlug: data.hotel_slug || hotelSlug || null,
       sourceType: "order",
       sourceId: data.id,

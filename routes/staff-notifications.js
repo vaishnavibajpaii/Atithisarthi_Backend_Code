@@ -3,6 +3,9 @@
 const express = require("express");
 const { requireStaffAuth } = require("../middleware/require-staff-auth");
 const { supabase } = require("../utils/supabase");
+const { env } = require("../config/env");
+const { getStaffTenantMutationClient } = require("../utils/tenant-route-database");
+const { getTenantRequestScope } = require("../utils/tenant-request-context");
 const { subscribeToNotificationEvents } = require("../utils/notification-live");
 const {
   fetchHotelFeatureConfig,
@@ -55,9 +58,15 @@ function isAcknowledgementSchemaNotReadyError(error) {
     details.includes("notification_card_ack_card_key_check");
 }
 
-async function persistNotificationAcknowledgement(context = {}, cardKey = "", acknowledgedThroughId = 0) {
+async function persistNotificationAcknowledgement(context = {}, cardKey = "", acknowledgedThroughId = 0, req = null) {
   const acknowledgedAt = new Date().toISOString();
-  const rpcResult = await supabase.rpc("acknowledge_notification_card", {
+  const database = req
+    ? await getStaffTenantMutationClient(req, supabase)
+    : supabase;
+  const scope = req && env.tenantRuntimeWritesEnabled
+    ? getTenantRequestScope(req)
+    : null;
+  const rpcResult = await database.rpc("acknowledge_notification_card", {
     p_hotel_slug: context.hotelSlug,
     p_staff_id: context.staffId,
     p_card_key: cardKey,
@@ -79,7 +88,7 @@ async function persistNotificationAcknowledgement(context = {}, cardKey = "", ac
     throw rpcResult.error;
   }
 
-  const currentResult = await supabase
+  const currentResult = await database
     .from("notification_card_acknowledgements")
     .select("acknowledged_through_id,acknowledged_at")
     .eq("hotel_slug", context.hotelSlug)
@@ -92,12 +101,13 @@ async function persistNotificationAcknowledgement(context = {}, cardKey = "", ac
     acknowledgedThroughId,
     Number(currentResult.data?.acknowledged_through_id || 0) || 0
   );
-  const fallbackResult = await supabase
+  const fallbackResult = await database
     .from("notification_card_acknowledgements")
     .upsert(
       [
         {
-          hotel_slug: context.hotelSlug,
+          ...(scope ? { tenant_id: scope.tenantId, property_id: scope.propertyId } : {}),
+          hotel_slug: scope?.propertySlug || context.hotelSlug,
           staff_id: context.staffId,
           card_key: cardKey,
           acknowledged_through_id: monotonicThroughId,
@@ -299,7 +309,8 @@ router.post("/cards/:cardKey/acknowledge", requireStaffAuth, async (req, res) =>
       persistedAcknowledgement = await persistNotificationAcknowledgement(
         context,
         cardKey,
-        acknowledgedThroughId
+        acknowledgedThroughId,
+        req
       );
     } catch (error) {
       if (isAcknowledgementSchemaNotReadyError(error)) {

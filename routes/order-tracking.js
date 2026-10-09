@@ -1,9 +1,10 @@
 const express = require("express");
 const rateLimit = require("express-rate-limit");
 const { supabase } = require("../utils/supabase");
-const { env } = require("../config/env");
-const { ensurePublicHotelAccess } = require("../utils/public-hotel-access");
+const { getTenantMutationClient } = require("../utils/tenant-route-database");
 const { getTenantRequestScope } = require("../utils/tenant-request-context");
+const { ensurePublicHotelAccess } = require("../utils/public-hotel-access");
+const { env } = require("../config/env");
 const {
   fetchTenantPublicOrderTrackingBundle
 } = require("../utils/tenant-public-order-tracking");
@@ -802,6 +803,12 @@ router.post("/:hotelSlug/:orderId/support-requests", trackingSupportLimiter, req
       });
     }
 
+    const hotelAccess = await ensurePublicHotelAccess(req, res, data.hotel_slug || hotelSlug, {
+      notFoundMessage: "Order tracking link is invalid or expired",
+      forbiddenMessage: "This order is not available from the current origin"
+    });
+    if (!hotelAccess) return;
+
     if (!hasDineInTrackingContext(data)) {
       return res.status(400).json({
         success: false,
@@ -821,8 +828,11 @@ router.post("/:hotelSlug/:orderId/support-requests", trackingSupportLimiter, req
       ownerWhatsAppNumber,
       buildTrackingActionMessage(data, requestType === "bill" ? "bill" : "help")
     );
+    const database = getTenantMutationClient(req, supabase);
+    const scope = env.tenantRuntimeWritesEnabled ? getTenantRequestScope(req) : null;
     const insertPayload = {
-      hotel_slug: data.hotel_slug || hotelSlug,
+      ...(scope ? { tenant_id: scope.tenantId, property_id: scope.propertyId } : {}),
+      hotel_slug: scope?.propertySlug || data.hotel_slug || hotelSlug,
       hotel_name: data.hotel_name || "",
       order_id: String(data.id || orderId),
       table_number: data.table_number || "",
@@ -838,7 +848,7 @@ router.post("/:hotelSlug/:orderId/support-requests", trackingSupportLimiter, req
       updated_at: new Date().toISOString()
     };
 
-    const { data: supportRequest, error: supportRequestError } = await supabase
+    const { data: supportRequest, error: supportRequestError } = await database
       .from("order_support_requests")
       .insert([insertPayload])
       .select()
@@ -858,6 +868,9 @@ router.post("/:hotelSlug/:orderId/support-requests", trackingSupportLimiter, req
     }
 
     void createNotificationEventSafely({
+      databaseClient: database,
+      tenantId: scope?.tenantId,
+      propertyId: scope?.propertyId,
       hotelSlug: supportRequest.hotel_slug || data.hotel_slug || hotelSlug,
       sourceType: "support_request",
       sourceId: supportRequest.id,
@@ -953,6 +966,12 @@ router.post("/:hotelSlug/:orderId/add-items", requirePublicFoodModule, async (re
       });
     }
 
+    const hotelAccess = await ensurePublicHotelAccess(req, res, baseOrder.hotel_slug || hotelSlug, {
+      notFoundMessage: "Order tracking link is invalid or expired",
+      forbiddenMessage: "This order is not available from the current origin"
+    });
+    if (!hotelAccess) return;
+
     if (!hasDineInTrackingContext(baseOrder)) {
       return res.status(400).json({
         success: false,
@@ -1021,9 +1040,12 @@ router.post("/:hotelSlug/:orderId/add-items", requirePublicFoodModule, async (re
       items: verifiedPricing.items,
       totals: verifiedPricing.totals
     });
+    const database = getTenantMutationClient(req, supabase);
+    const scope = env.tenantRuntimeWritesEnabled ? getTenantRequestScope(req) : null;
     const insertPayload = {
+      ...(scope ? { tenant_id: scope.tenantId, property_id: scope.propertyId } : {}),
       hotel_name: baseOrder.hotel_name || verifiedPricing.hotel.hotel_name || "",
-      hotel_slug: baseOrder.hotel_slug || verifiedPricing.hotel.hotel_slug || hotelSlug,
+      hotel_slug: scope?.propertySlug || baseOrder.hotel_slug || verifiedPricing.hotel.hotel_slug || hotelSlug,
       customer_name: baseOrder.customer_name || "Table Guest",
       customer_phone: baseOrder.customer_phone || "",
       customer_address: baseOrder.customer_address || `Dine-in table ${baseOrder.table_number || ""}`.trim(),
@@ -1048,7 +1070,7 @@ router.post("/:hotelSlug/:orderId/add-items", requirePublicFoodModule, async (re
       ...getOrderTrackingColumns()
     };
 
-    const { data: addonOrder, error: addonOrderError } = await supabase
+    const { data: addonOrder, error: addonOrderError } = await database
       .from("orders")
       .insert([insertPayload])
       .select()
@@ -1073,6 +1095,9 @@ router.post("/:hotelSlug/:orderId/add-items", requirePublicFoodModule, async (re
     }
 
     void createNotificationEventSafely({
+      databaseClient: database,
+      tenantId: scope?.tenantId,
+      propertyId: scope?.propertyId,
       hotelSlug: addonOrder.hotel_slug || hotelSlug,
       sourceType: "order",
       sourceId: addonOrder.id,

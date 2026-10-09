@@ -27,6 +27,7 @@ const {
   roomImageUpdateSchema
 } = require("../validators/room-media");
 const { supabase } = require("../utils/supabase");
+const { getStaffTenantMutationClient } = require("../utils/tenant-route-database");
 const { getImageDimensions } = require("../utils/image-dimensions");
 const {
   buildPropertyStoragePath,
@@ -61,6 +62,18 @@ const roomImageUpload = multer({
 
 router.use(requireStaffAuth);
 router.use(requireRooms);
+router.use(async (req, res, next) => {
+  try {
+    req.tenantMutationDatabase = await getStaffTenantMutationClient(req, supabase);
+    return next();
+  } catch (error) {
+    return next(error);
+  }
+});
+
+function mutationDatabase(req) {
+  return req.tenantMutationDatabase || supabase;
+}
 
 function scope(req) {
   return String(req.staffHotelSlug || "").trim();
@@ -186,7 +199,7 @@ function fail(res, error, fallback) {
 
 async function audit(req, action, targetType, targetId, oldValue = {}, newValue = {}, reason = "") {
   const who = actor(req);
-  const { error } = await supabase.from("room_operation_audit").insert([{
+  const { error } = await mutationDatabase(req).from("room_operation_audit").insert([{
     hotel_slug: scope(req), actor_id: who.id, actor_role: who.role, action,
     target_type: targetType, target_id: String(targetId), old_value: oldValue || {},
     new_value: newValue || {}, reason: String(reason || "").slice(0, 2000)
@@ -525,15 +538,15 @@ router.post("/media/:targetType/:targetId/images", handleRoomImageUpload, async 
       file_size: req.file.size,
       created_by: actor(req).id
     };
-    const inserted = await supabase.from("room_images").insert([payload]).select().single();
+    const inserted = await mutationDatabase(req).from("room_images").insert([payload]).select().single();
     if (inserted.error) throw inserted.error;
     try {
       await audit(req, "room_image_uploaded", target.type, target.targetId, {}, { imageId: inserted.data.id, altText: metadata.altText });
     } catch (auditError) {
-      await supabase.from("room_images").delete().eq("id", inserted.data.id).eq("hotel_slug", hotelSlug);
+      await mutationDatabase(req).from("room_images").delete().eq("id", inserted.data.id).eq("hotel_slug", hotelSlug);
       if (inserted.data.is_primary) {
         const fallback = await supabase.from("room_images").select("id").eq("hotel_slug", hotelSlug).eq(target.column, target.targetId).eq("is_active", true).order("display_order").order("id").limit(1).maybeSingle();
-        if (fallback.data?.id) await supabase.from("room_images").update({ is_primary: true }).eq("id", fallback.data.id).eq("hotel_slug", hotelSlug);
+        if (fallback.data?.id) await mutationDatabase(req).from("room_images").update({ is_primary: true }).eq("id", fallback.data.id).eq("hotel_slug", hotelSlug);
       }
       throw auditError;
     }
@@ -571,7 +584,7 @@ router.patch("/media/:targetType/:targetId/images/:imageId", validateBody(roomIm
     if (body.caption !== undefined) payload.caption = body.caption;
     if (body.isPrimary !== undefined) payload.is_primary = body.isPrimary;
     if (body.isActive !== undefined) payload.is_active = body.isActive;
-    const updated = await supabase.from("room_images").update(payload).eq("id", imageId).eq("hotel_slug", scope(req)).eq(target.column, target.targetId).select().maybeSingle();
+    const updated = await mutationDatabase(req).from("room_images").update(payload).eq("id", imageId).eq("hotel_slug", scope(req)).eq(target.column, target.targetId).select().maybeSingle();
     if (updated.error) throw updated.error;
     if (!updated.data) return res.status(409).json({ success: false, code: "ROOM_IMAGE_CHANGED", message: "The room image changed. Refresh and retry." });
     await audit(req, "room_image_updated", "room_image", imageId, mapRoomImage(current), mapRoomImage(updated.data));
@@ -586,7 +599,7 @@ router.post("/media/:targetType/:targetId/images/reorder", validateBody(roomImag
     const target = await requireOwnedRoomImageTarget(req, res);
     if (!target) return;
     const who = actor(req);
-    const { data, error } = await supabase.rpc("reorder_room_images", {
+    const { data, error } = await mutationDatabase(req).rpc("reorder_room_images", {
       p_hotel_slug: scope(req),
       p_target_type: target.type,
       p_target_id: target.targetId,
@@ -615,7 +628,7 @@ router.delete("/media/:targetType/:targetId/images/:imageId", async (req, res) =
     if (current.error) throw current.error;
     if (!current.data) return res.status(404).json({ success: false, code: "ROOM_IMAGE_NOT_FOUND", message: "Room image not found for this hotel" });
     const who = actor(req);
-    const removed = await supabase.rpc("delete_room_image", { p_hotel_slug: scope(req), p_image_id: imageId, p_actor_id: who.id, p_actor_role: who.role });
+    const removed = await mutationDatabase(req).rpc("delete_room_image", { p_hotel_slug: scope(req), p_image_id: imageId, p_actor_id: who.id, p_actor_role: who.role });
     if (removed.error) throw removed.error;
     const propertyScope = await resolvePropertyStorageScope(supabase, scope(req));
     let storageWarning = "";
@@ -685,7 +698,7 @@ router.put("/tax/settings", validateBody(roomTaxSettingsSchema), async (req, res
 
     let result;
     if (current) {
-      result = await supabase
+      result = await mutationDatabase(req)
         .from("hotel_room_tax_settings")
         .update({
           ...taxSettingsPayload(req.validatedBody, Number(current.version || 1) + 1),
@@ -703,7 +716,7 @@ router.put("/tax/settings", validateBody(roomTaxSettingsSchema), async (req, res
         });
       }
     } else {
-      result = await supabase
+      result = await mutationDatabase(req)
         .from("hotel_room_tax_settings")
         .insert([{
           hotel_slug: hotelSlug,
@@ -730,7 +743,7 @@ router.post("/tax/rules", validateBody(roomTaxRuleCreateSchema), async (req, res
     const who = actor(req);
     const payload = taxRulePayload(req.validatedBody);
     payload.status = "draft";
-    const { data, error } = await supabase
+    const { data, error } = await mutationDatabase(req)
       .from("room_tax_rules")
       .insert([{ hotel_slug: scope(req), ...payload, version: 1, created_by: who.id }])
       .select()
@@ -765,7 +778,7 @@ router.patch("/tax/rules/:id", validateBody(roomTaxRuleUpdateSchema), async (req
     }
     const payload = taxRulePayload(req.validatedBody);
     payload.status = "draft";
-    const { data, error } = await supabase
+    const { data, error } = await mutationDatabase(req)
       .from("room_tax_rules")
       .update({ ...payload, version: Number(current.version) + 1, updated_at: new Date().toISOString() })
       .eq("id", ruleId)
@@ -788,7 +801,7 @@ router.post("/tax/rules/:id/activate", validateBody(roomTaxRuleActionSchema), as
     const ruleId = id(req.params.id);
     if (!ruleId) return res.status(400).json({ success: false, message: "Valid GST rule id is required" });
     const who = actor(req);
-    const { data, error } = await supabase.rpc("activate_room_tax_rule", {
+    const { data, error } = await mutationDatabase(req).rpc("activate_room_tax_rule", {
       p_hotel_slug: scope(req),
       p_rule_id: ruleId,
       p_expected_version: req.validatedBody.expectedVersion,
@@ -811,7 +824,7 @@ router.post("/tax/rules/:id/retire", validateBody(roomTaxRuleActionSchema), asyn
     if (Number(current.version) !== req.validatedBody.expectedVersion) {
       return res.status(409).json({ success: false, code: "ROOM_TAX_RULE_CHANGED", message: "This GST rule changed after it was loaded. Refresh and retry." });
     }
-    const { data, error } = await supabase
+    const { data, error } = await mutationDatabase(req)
       .from("room_tax_rules")
       .update({ status: "retired", retired_at: new Date().toISOString(), version: Number(current.version) + 1, updated_at: new Date().toISOString() })
       .eq("id", ruleId)
@@ -883,7 +896,7 @@ function floorPayload(body) {
 
 router.post("/floors", validateBody(floorCreateSchema), async (req, res) => {
   try {
-    const { data, error } = await supabase.from("hotel_floors").insert([{ hotel_slug: scope(req), ...floorPayload(req.validatedBody) }]).select().single();
+    const { data, error } = await mutationDatabase(req).from("hotel_floors").insert([{ hotel_slug: scope(req), ...floorPayload(req.validatedBody) }]).select().single();
     if (error) throw error;
     await audit(req, "floor_created", "hotel_floor", data.id, {}, data);
     res.status(201).json({ success: true, floor: data });
@@ -899,7 +912,7 @@ router.patch("/floors/:id", validateBody(floorUpdateSchema), async (req, res) =>
       if (countError) throw countError;
       if (count > 0) return res.status(409).json({ success: false, code: "FLOOR_HAS_ACTIVE_ROOMS", message: "Move or deactivate active rooms before deactivating this floor" });
     }
-    const { data, error } = await supabase.from("hotel_floors").update({ ...floorPayload(req.validatedBody), updated_at: new Date().toISOString() }).eq("id", floorId).eq("hotel_slug", scope(req)).select().maybeSingle();
+    const { data, error } = await mutationDatabase(req).from("hotel_floors").update({ ...floorPayload(req.validatedBody), updated_at: new Date().toISOString() }).eq("id", floorId).eq("hotel_slug", scope(req)).select().maybeSingle();
     if (error) throw error; await audit(req, "floor_updated", "hotel_floor", floorId, current, data); res.json({ success: true, floor: data });
   } catch (error) { return fail(res, error, "Failed to update floor"); }
 });
@@ -910,7 +923,7 @@ function roomTypePayload(body) {
 }
 
 router.post("/room-types", validateBody(managerRoomTypeCreateSchema), async (req, res) => {
-  try { const { data, error } = await supabase.from("room_types").insert([{ hotel_slug: scope(req), ...roomTypePayload(req.validatedBody) }]).select().single(); if (error) throw error; await audit(req, "room_type_created", "room_type", data.id, {}, data); res.status(201).json({ success: true, roomType: data }); }
+  try { const { data, error } = await mutationDatabase(req).from("room_types").insert([{ hotel_slug: scope(req), ...roomTypePayload(req.validatedBody) }]).select().single(); if (error) throw error; await audit(req, "room_type_created", "room_type", data.id, {}, data); res.status(201).json({ success: true, roomType: data }); }
   catch (error) { return fail(res, error, "Failed to create room type"); }
 });
 
@@ -928,7 +941,7 @@ router.patch("/room-types/:id", validateBody(managerRoomTypeUpdateSchema), async
         message: "This room type has an active or confirmed booking affected by the change. Schedule a non-conflicting future rate plan instead."
       });
     }
-    const { data, error } = await supabase
+    const { data, error } = await mutationDatabase(req)
       .from("room_types")
       .update({ ...roomTypePayload(req.validatedBody), updated_at: new Date().toISOString() })
       .eq("id", resourceId)
@@ -998,7 +1011,7 @@ async function roomTypeHasFinancialConflict(hotelSlug, roomTypeId) {
 }
 
 router.post("/rooms", validateBody(managerRoomCreateSchema), async (req,res)=>{
-  try{await ensureReferences(scope(req),req.validatedBody);const payload=roomPayload(req.validatedBody);if(req.validatedBody.floorId){const floor=await owned("hotel_floors",req.validatedBody.floorId,scope(req),"floor_name");payload.floor=floor.floor_name;}const {data,error}=await supabase.from("rooms").insert([{hotel_slug:scope(req),...payload}]).select().single();if(error)throw error;await audit(req,"room_created","room",data.id,{},data);res.status(201).json({success:true,room:data});}
+  try{await ensureReferences(scope(req),req.validatedBody);const payload=roomPayload(req.validatedBody);if(req.validatedBody.floorId){const floor=await owned("hotel_floors",req.validatedBody.floorId,scope(req),"floor_name");payload.floor=floor.floor_name;}const {data,error}=await mutationDatabase(req).from("rooms").insert([{hotel_slug:scope(req),...payload}]).select().single();if(error)throw error;await audit(req,"room_created","room",data.id,{},data);res.status(201).json({success:true,room:data});}
   catch(error){const known=handleKnown(res,error);return known||fail(res,error,"Failed to create room");}
 });
 
@@ -1033,7 +1046,7 @@ router.patch("/rooms/:id", validateBody(managerRoomUpdateSchema), async (req, re
       const floor = await owned("hotel_floors", req.validatedBody.floorId, scope(req), "floor_name");
       payload.floor = floor.floor_name;
     }
-    const { data, error } = await supabase
+    const { data, error } = await mutationDatabase(req)
       .from("rooms")
       .update({ ...payload, updated_at: new Date().toISOString() })
       .eq("id", roomId)
@@ -1051,21 +1064,21 @@ router.patch("/rooms/:id", validateBody(managerRoomUpdateSchema), async (req, re
 
 function ratePayload(body){const map={roomId:"room_id",roomTypeId:"room_type_id",planName:"plan_name",planCode:"plan_code",startDate:"start_date",endDate:"end_date",daysOfWeek:"days_of_week",nightlyPrice:"nightly_price",extraAdultPrice:"extra_adult_price",extraChildPrice:"extra_child_price",includedServices:"included_services",cancellationRule:"cancellation_rule",minimumStay:"minimum_stay",maximumStay:"maximum_stay",priority:"priority",isActive:"is_active",status:"status"};return Object.fromEntries(Object.entries(map).filter(([key])=>body[key]!==undefined).map(([key,column])=>[column,body[key]]));}
 
-router.post("/rate-plans",validateBody(ratePlanCreateSchema),async(req,res)=>{try{await ensureReferences(scope(req),req.validatedBody);const payload=ratePayload(req.validatedBody);if(payload.status==="active")payload.is_active=true;const{data,error}=await supabase.from("room_rate_plans").insert([{hotel_slug:scope(req),...payload}]).select().single();if(error)throw error;await audit(req,"rate_plan_created","rate_plan",data.id,{},data);res.status(201).json({success:true,ratePlan:data});}catch(error){const known=handleKnown(res,error);return known||fail(res,error,"Failed to create rate plan");}});
-router.patch("/rate-plans/:id",validateBody(ratePlanUpdateSchema),async(req,res)=>{try{const resourceId=id(req.params.id);const current=await owned("room_rate_plans",resourceId,scope(req));if(!current)return res.status(404).json({success:false,message:"Rate plan not found for this hotel"});await ensureReferences(scope(req),req.validatedBody);if(req.validatedBody.expectedVersion&&Number(current.version||1)!==req.validatedBody.expectedVersion)return res.status(409).json({success:false,code:"ROOM_RATE_PLAN_CHANGED",message:"This rate plan changed after it was loaded. Refresh and retry."});const payload=ratePayload(req.validatedBody);if(payload.status==="active")payload.is_active=true;if(payload.status==="retired")payload.is_active=false;let query=supabase.from("room_rate_plans").update({...payload,updated_at:new Date().toISOString()}).eq("id",resourceId).eq("hotel_slug",scope(req));if(req.validatedBody.expectedVersion)query=query.eq("version",req.validatedBody.expectedVersion);const{data,error}=await query.select().maybeSingle();if(error)throw error;if(!data)return res.status(409).json({success:false,code:"ROOM_RATE_PLAN_CHANGED",message:"This rate plan changed after it was loaded. Refresh and retry."});await audit(req,"rate_plan_updated","rate_plan",resourceId,current,data);res.json({success:true,ratePlan:data});}catch(error){const known=handleKnown(res,error);return known||fail(res,error,"Failed to update rate plan");}});
+router.post("/rate-plans",validateBody(ratePlanCreateSchema),async(req,res)=>{try{await ensureReferences(scope(req),req.validatedBody);const payload=ratePayload(req.validatedBody);if(payload.status==="active")payload.is_active=true;const{data,error}=await mutationDatabase(req).from("room_rate_plans").insert([{hotel_slug:scope(req),...payload}]).select().single();if(error)throw error;await audit(req,"rate_plan_created","rate_plan",data.id,{},data);res.status(201).json({success:true,ratePlan:data});}catch(error){const known=handleKnown(res,error);return known||fail(res,error,"Failed to create rate plan");}});
+router.patch("/rate-plans/:id",validateBody(ratePlanUpdateSchema),async(req,res)=>{try{const resourceId=id(req.params.id);const current=await owned("room_rate_plans",resourceId,scope(req));if(!current)return res.status(404).json({success:false,message:"Rate plan not found for this hotel"});await ensureReferences(scope(req),req.validatedBody);if(req.validatedBody.expectedVersion&&Number(current.version||1)!==req.validatedBody.expectedVersion)return res.status(409).json({success:false,code:"ROOM_RATE_PLAN_CHANGED",message:"This rate plan changed after it was loaded. Refresh and retry."});const payload=ratePayload(req.validatedBody);if(payload.status==="active")payload.is_active=true;if(payload.status==="retired")payload.is_active=false;let query=mutationDatabase(req).from("room_rate_plans").update({...payload,updated_at:new Date().toISOString()}).eq("id",resourceId).eq("hotel_slug",scope(req));if(req.validatedBody.expectedVersion)query=query.eq("version",req.validatedBody.expectedVersion);const{data,error}=await query.select().maybeSingle();if(error)throw error;if(!data)return res.status(409).json({success:false,code:"ROOM_RATE_PLAN_CHANGED",message:"This rate plan changed after it was loaded. Refresh and retry."});await audit(req,"rate_plan_updated","rate_plan",resourceId,current,data);res.json({success:true,ratePlan:data});}catch(error){const known=handleKnown(res,error);return known||fail(res,error,"Failed to update rate plan");}});
 
 function amenityPayload(body){const map={amenityCode:"amenity_code",amenityName:"amenity_name",description:"description",displayOrder:"display_order",isActive:"is_active"};return Object.fromEntries(Object.entries(map).filter(([key])=>body[key]!==undefined).map(([key,column])=>[column,body[key]]));}
-router.post("/amenities",validateBody(amenitySchema),async(req,res)=>{try{const{data,error}=await supabase.from("hotel_room_amenities").insert([{hotel_slug:scope(req),...amenityPayload(req.validatedBody)}]).select().single();if(error)throw error;await audit(req,"amenity_created","room_amenity",data.id,{},data);res.status(201).json({success:true,amenity:data});}catch(error){return fail(res,error,"Failed to create amenity");}});
-router.patch("/amenities/:id",validateBody(amenityUpdateSchema),async(req,res)=>{try{const resourceId=id(req.params.id);const current=await owned("hotel_room_amenities",resourceId,scope(req));if(!current)return res.status(404).json({success:false,message:"Amenity not found for this hotel"});const{data,error}=await supabase.from("hotel_room_amenities").update({...amenityPayload(req.validatedBody),updated_at:new Date().toISOString()}).eq("id",resourceId).eq("hotel_slug",scope(req)).select().maybeSingle();if(error)throw error;await audit(req,"amenity_updated","room_amenity",resourceId,current,data);res.json({success:true,amenity:data});}catch(error){return fail(res,error,"Failed to update amenity");}});
+router.post("/amenities",validateBody(amenitySchema),async(req,res)=>{try{const{data,error}=await mutationDatabase(req).from("hotel_room_amenities").insert([{hotel_slug:scope(req),...amenityPayload(req.validatedBody)}]).select().single();if(error)throw error;await audit(req,"amenity_created","room_amenity",data.id,{},data);res.status(201).json({success:true,amenity:data});}catch(error){return fail(res,error,"Failed to create amenity");}});
+router.patch("/amenities/:id",validateBody(amenityUpdateSchema),async(req,res)=>{try{const resourceId=id(req.params.id);const current=await owned("hotel_room_amenities",resourceId,scope(req));if(!current)return res.status(404).json({success:false,message:"Amenity not found for this hotel"});const{data,error}=await mutationDatabase(req).from("hotel_room_amenities").update({...amenityPayload(req.validatedBody),updated_at:new Date().toISOString()}).eq("id",resourceId).eq("hotel_slug",scope(req)).select().maybeSingle();if(error)throw error;await audit(req,"amenity_updated","room_amenity",resourceId,current,data);res.json({success:true,amenity:data});}catch(error){return fail(res,error,"Failed to update amenity");}});
 
-router.post("/maintenance",validateBody(maintenanceCreateSchema),async(req,res)=>{try{await ensureReferences(scope(req),req.validatedBody);const b=req.validatedBody,w=actor(req);const{data,error}=await supabase.from("room_maintenance").insert([{hotel_slug:scope(req),room_id:b.roomId,maintenance_type:b.maintenanceType||"repair",priority:b.priority||"normal",description:b.description,start_at:b.startAt,end_at:b.endAt||null,assigned_to:b.assignedTo||null,cost:b.cost??null,created_by_user_id:w.id}]).select().single();if(error)throw error;await audit(req,"maintenance_created","room_maintenance",data.id,{},data,b.description);res.status(201).json({success:true,maintenance:data});}catch(error){const known=handleKnown(res,error);return known||fail(res,error,"Failed to create maintenance block");}});
-router.patch("/maintenance/:id",validateBody(maintenanceUpdateSchema),async(req,res)=>{try{const resourceId=id(req.params.id);const current=await owned("room_maintenance",resourceId,scope(req));if(!current)return res.status(404).json({success:false,message:"Maintenance record not found for this hotel"});const b=req.validatedBody,payload={status:b.status,updated_at:new Date().toISOString()};if(b.endAt!==undefined)payload.end_at=b.endAt;if(b.assignedTo!==undefined)payload.assigned_to=b.assignedTo||null;if(b.cost!==undefined)payload.cost=b.cost;if(b.description!==undefined)payload.description=b.description||current.description;if(b.status==="completed")payload.completed_at=new Date().toISOString();const{data,error}=await supabase.from("room_maintenance").update(payload).eq("id",resourceId).eq("hotel_slug",scope(req)).select().maybeSingle();if(error)throw error;await audit(req,"maintenance_updated","room_maintenance",resourceId,current,data);res.json({success:true,maintenance:data});}catch(error){return fail(res,error,"Failed to update maintenance block");}});
+router.post("/maintenance",validateBody(maintenanceCreateSchema),async(req,res)=>{try{await ensureReferences(scope(req),req.validatedBody);const b=req.validatedBody,w=actor(req);const{data,error}=await mutationDatabase(req).from("room_maintenance").insert([{hotel_slug:scope(req),room_id:b.roomId,maintenance_type:b.maintenanceType||"repair",priority:b.priority||"normal",description:b.description,start_at:b.startAt,end_at:b.endAt||null,assigned_to:b.assignedTo||null,cost:b.cost??null,created_by_user_id:w.id}]).select().single();if(error)throw error;await audit(req,"maintenance_created","room_maintenance",data.id,{},data,b.description);res.status(201).json({success:true,maintenance:data});}catch(error){const known=handleKnown(res,error);return known||fail(res,error,"Failed to create maintenance block");}});
+router.patch("/maintenance/:id",validateBody(maintenanceUpdateSchema),async(req,res)=>{try{const resourceId=id(req.params.id);const current=await owned("room_maintenance",resourceId,scope(req));if(!current)return res.status(404).json({success:false,message:"Maintenance record not found for this hotel"});const b=req.validatedBody,payload={status:b.status,updated_at:new Date().toISOString()};if(b.endAt!==undefined)payload.end_at=b.endAt;if(b.assignedTo!==undefined)payload.assigned_to=b.assignedTo||null;if(b.cost!==undefined)payload.cost=b.cost;if(b.description!==undefined)payload.description=b.description||current.description;if(b.status==="completed")payload.completed_at=new Date().toISOString();const{data,error}=await mutationDatabase(req).from("room_maintenance").update(payload).eq("id",resourceId).eq("hotel_slug",scope(req)).select().maybeSingle();if(error)throw error;await audit(req,"maintenance_updated","room_maintenance",resourceId,current,data);res.json({success:true,maintenance:data});}catch(error){return fail(res,error,"Failed to update maintenance block");}});
 
-router.post("/housekeeping",validateBody(housekeepingCreateSchema),async(req,res)=>{try{await ensureReferences(scope(req),req.validatedBody);const b=req.validatedBody,w=actor(req);const{data,error}=await supabase.from("room_housekeeping_tasks").insert([{hotel_slug:scope(req),room_id:b.roomId,booking_id:b.bookingId||null,status:b.status||"dirty",priority:b.priority||"normal",assigned_to:b.assignedTo||null,notes:b.notes||"",updated_by_user_id:w.id}]).select().single();if(error)throw error;await audit(req,"housekeeping_created","housekeeping_task",data.id,{},data);res.status(201).json({success:true,housekeeping:data});}catch(error){const known=handleKnown(res,error);return known||fail(res,error,"Failed to create housekeeping task");}});
-router.patch("/housekeeping/:id",validateBody(housekeepingUpdateSchema),async(req,res)=>{try{const resourceId=id(req.params.id);const current=await owned("room_housekeeping_tasks",resourceId,scope(req));if(!current)return res.status(404).json({success:false,message:"Housekeeping task not found for this hotel"});const b=req.validatedBody,w=actor(req),now=new Date().toISOString(),payload={status:b.status,updated_by_user_id:w.id,updated_at:now};if(b.assignedTo!==undefined)payload.assigned_to=b.assignedTo||null;if(b.notes!==undefined)payload.notes=b.notes||"";if(b.status==="cleaning"&&!current.started_at)payload.started_at=now;if(b.status==="clean")payload.completed_at=now;if(b.status==="inspected")payload.inspected_at=now;const{data,error}=await supabase.from("room_housekeeping_tasks").update(payload).eq("id",resourceId).eq("hotel_slug",scope(req)).select().maybeSingle();if(error)throw error;await audit(req,"housekeeping_updated","housekeeping_task",resourceId,current,data);res.json({success:true,housekeeping:data});}catch(error){return fail(res,error,"Failed to update housekeeping task");}});
+router.post("/housekeeping",validateBody(housekeepingCreateSchema),async(req,res)=>{try{await ensureReferences(scope(req),req.validatedBody);const b=req.validatedBody,w=actor(req);const{data,error}=await mutationDatabase(req).from("room_housekeeping_tasks").insert([{hotel_slug:scope(req),room_id:b.roomId,booking_id:b.bookingId||null,status:b.status||"dirty",priority:b.priority||"normal",assigned_to:b.assignedTo||null,notes:b.notes||"",updated_by_user_id:w.id}]).select().single();if(error)throw error;await audit(req,"housekeeping_created","housekeeping_task",data.id,{},data);res.status(201).json({success:true,housekeeping:data});}catch(error){const known=handleKnown(res,error);return known||fail(res,error,"Failed to create housekeeping task");}});
+router.patch("/housekeeping/:id",validateBody(housekeepingUpdateSchema),async(req,res)=>{try{const resourceId=id(req.params.id);const current=await owned("room_housekeeping_tasks",resourceId,scope(req));if(!current)return res.status(404).json({success:false,message:"Housekeeping task not found for this hotel"});const b=req.validatedBody,w=actor(req),now=new Date().toISOString(),payload={status:b.status,updated_by_user_id:w.id,updated_at:now};if(b.assignedTo!==undefined)payload.assigned_to=b.assignedTo||null;if(b.notes!==undefined)payload.notes=b.notes||"";if(b.status==="cleaning"&&!current.started_at)payload.started_at=now;if(b.status==="clean")payload.completed_at=now;if(b.status==="inspected")payload.inspected_at=now;const{data,error}=await mutationDatabase(req).from("room_housekeeping_tasks").update(payload).eq("id",resourceId).eq("hotel_slug",scope(req)).select().maybeSingle();if(error)throw error;await audit(req,"housekeeping_updated","housekeeping_task",resourceId,current,data);res.json({success:true,housekeeping:data});}catch(error){return fail(res,error,"Failed to update housekeeping task");}});
 
-router.post("/bookings/:id/shift",validateBody(roomShiftSchema),async(req,res)=>{try{const bookingId=id(req.params.id);await ensureReferences(scope(req),{bookingId,roomId:req.validatedBody.targetRoomId});const w=actor(req);const{data,error}=await supabase.rpc("shift_room_booking",{p_hotel_slug:scope(req),p_booking_id:bookingId,p_target_room_id:req.validatedBody.targetRoomId,p_reason:req.validatedBody.reason,p_actor_id:w.id,p_actor_role:w.role,p_effective_at:req.validatedBody.effectiveAt||new Date().toISOString()});if(error)throw error;res.json({success:true,message:"Room shift completed",shift:data});}catch(error){const known=handleKnown(res,error);return known||fail(res,error,"Failed to shift room");}});
-router.post("/bookings/:id/extend",validateBody(stayExtensionSchema),async(req,res)=>{try{const bookingId=id(req.params.id);await ensureReferences(scope(req),{bookingId});const w=actor(req);const{data,error}=await supabase.rpc("extend_room_booking",{p_hotel_slug:scope(req),p_booking_id:bookingId,p_new_check_out:req.validatedBody.newCheckOutDate,p_actor_id:w.id,p_actor_role:w.role,p_reason:req.validatedBody.reason||""});if(error)throw error;res.json({success:true,message:"Stay extended",extension:data});}catch(error){const known=handleKnown(res,error);return known||fail(res,error,"Failed to extend stay");}});
+router.post("/bookings/:id/shift",validateBody(roomShiftSchema),async(req,res)=>{try{const bookingId=id(req.params.id);await ensureReferences(scope(req),{bookingId,roomId:req.validatedBody.targetRoomId});const w=actor(req);const{data,error}=await mutationDatabase(req).rpc("shift_room_booking",{p_hotel_slug:scope(req),p_booking_id:bookingId,p_target_room_id:req.validatedBody.targetRoomId,p_reason:req.validatedBody.reason,p_actor_id:w.id,p_actor_role:w.role,p_effective_at:req.validatedBody.effectiveAt||new Date().toISOString()});if(error)throw error;res.json({success:true,message:"Room shift completed",shift:data});}catch(error){const known=handleKnown(res,error);return known||fail(res,error,"Failed to shift room");}});
+router.post("/bookings/:id/extend",validateBody(stayExtensionSchema),async(req,res)=>{try{const bookingId=id(req.params.id);await ensureReferences(scope(req),{bookingId});const w=actor(req);const{data,error}=await mutationDatabase(req).rpc("extend_room_booking",{p_hotel_slug:scope(req),p_booking_id:bookingId,p_new_check_out:req.validatedBody.newCheckOutDate,p_actor_id:w.id,p_actor_role:w.role,p_reason:req.validatedBody.reason||""});if(error)throw error;res.json({success:true,message:"Stay extended",extension:data});}catch(error){const known=handleKnown(res,error);return known||fail(res,error,"Failed to extend stay");}});
 
 router.get("/reports/summary", async (req, res) => {
   try {

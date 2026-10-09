@@ -3,6 +3,7 @@ const { supabase } = require("../utils/supabase");
 const { publicTestimonialSubmissionLimiter } = require("../middleware/public-rate-limiters");
 const { createNotificationEventSafely } = require("../utils/notifications");
 const { ensurePublicHotelAccess } = require("../utils/public-hotel-access");
+const { getTenantMutationClient } = require("../utils/tenant-route-database");
 const { validateBody } = require("../validators/common");
 const { testimonialSubmissionSchema } = require("../validators/public");
 
@@ -37,11 +38,14 @@ router.post("/", publicTestimonialSubmissionLimiter, validateBody(testimonialSub
       return;
     }
 
-    const { data, error } = await supabase
+    const database = getTenantMutationClient(req, supabase);
+    const { data, error } = await database
       .from("testimonials")
       .insert([
         {
-          hotel_slug: hotelSlug,
+          tenant_id: hotelAccess.tenant_id,
+          property_id: hotelAccess.id,
+          hotel_slug: hotelAccess.slug,
           guest_name: name,
           guest_role: role || "",
           review_text: text,
@@ -69,6 +73,9 @@ router.post("/", publicTestimonialSubmissionLimiter, validateBody(testimonialSub
     }
 
     void createNotificationEventSafely({
+      databaseClient: database,
+      tenantId: hotelAccess.tenant_id,
+      propertyId: hotelAccess.id,
       hotelSlug: data.hotel_slug || hotelSlug,
       sourceType: "testimonial",
       sourceId: data.id,

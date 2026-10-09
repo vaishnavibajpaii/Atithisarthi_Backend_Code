@@ -144,6 +144,9 @@ function getReadinessChecks() {
   const tenantStaffSessionReady =
     !env.tenantRuntimeStaffSessionEnabled ||
     (env.tenantRuntimeEnabled && hasText(env.tenantDatabaseUrl));
+  const tenantRuntimeWritesReady =
+    !env.tenantRuntimeWritesEnabled ||
+    (env.tenantRuntimeEnabled && hasText(env.tenantDatabaseUrl));
 
   return [
     buildReadinessCheck(
@@ -256,6 +259,12 @@ function getReadinessChecks() {
       tenantStaffSessionReady,
       "tenant_staff_session_requires_tenant_runtime",
       env.tenantRuntimeStaffSessionEnabled
+    ),
+    buildReadinessCheck(
+      "tenant_runtime_writes",
+      tenantRuntimeWritesReady,
+      "tenant_writes_require_tenant_runtime",
+      env.tenantRuntimeWritesEnabled
     )
   ];
 }

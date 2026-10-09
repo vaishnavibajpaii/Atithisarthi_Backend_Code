@@ -3,6 +3,7 @@ const { supabase } = require("../utils/supabase");
 const { publicContactSubmissionLimiter } = require("../middleware/public-rate-limiters");
 const { createNotificationEventSafely } = require("../utils/notifications");
 const { ensurePublicHotelAccess } = require("../utils/public-hotel-access");
+const { getTenantMutationClient } = require("../utils/tenant-route-database");
 const { validateBody } = require("../validators/common");
 const { contactSubmissionSchema } = require("../validators/public");
 
@@ -46,11 +47,14 @@ router.post("/", publicContactSubmissionLimiter, validateBody(contactSubmissionS
       return;
     }
 
-    const { data, error } = await supabase
+    const database = getTenantMutationClient(req, supabase);
+    const { data, error } = await database
       .from("contact_submissions")
       .insert([
         {
-          hotel_slug: hotelSlug,
+          tenant_id: hotelAccess.tenant_id,
+          property_id: hotelAccess.id,
+          hotel_slug: hotelAccess.slug,
           hotel_name: hotelName,
           name,
           email,
@@ -83,6 +87,9 @@ router.post("/", publicContactSubmissionLimiter, validateBody(contactSubmissionS
     }
 
     void createNotificationEventSafely({
+      databaseClient: database,
+      tenantId: hotelAccess.tenant_id,
+      propertyId: hotelAccess.id,
       hotelSlug: data.hotel_slug || hotelSlug,
       sourceType: "contact_submission",
       sourceId: data.id,

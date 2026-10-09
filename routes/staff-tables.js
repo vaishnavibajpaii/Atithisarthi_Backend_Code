@@ -1,5 +1,8 @@
 const express = require("express");
 const { supabase } = require("../utils/supabase");
+const { env } = require("../config/env");
+const { getStaffTenantMutationClient } = require("../utils/tenant-route-database");
+const { getTenantRequestScope } = require("../utils/tenant-request-context");
 const { requireStaffAuth, requireStaffManagerAccess } = require("../middleware/require-staff-auth");
 const {
   requireHotelFeature,
@@ -239,9 +242,17 @@ router.post("/tables", requireStaffAuth, requireStaffManagerAccess, requireStaff
 
     const hotelSlug = normalizeTableText(req.staffHotelSlug, 120);
     const actor = actorId(req);
-    const { data, error } = await supabase
+    const database = await getStaffTenantMutationClient(req, supabase);
+    const scope = env.tenantRuntimeWritesEnabled ? getTenantRequestScope(req) : null;
+    const { data, error } = await database
       .from("restaurant_tables")
-      .insert([{ hotel_slug: hotelSlug, ...parsed.value, created_by_staff_id: actor, updated_by_staff_id: actor }])
+      .insert([{
+        ...(scope ? { tenant_id: scope.tenantId, property_id: scope.propertyId } : {}),
+        hotel_slug: scope?.propertySlug || hotelSlug,
+        ...parsed.value,
+        created_by_staff_id: actor,
+        updated_by_staff_id: actor
+      }])
       .select("*")
       .single();
 
@@ -292,8 +303,15 @@ router.post("/tables/bulk", requireStaffAuth, requireStaffManagerAccess, require
       created_by_staff_id: actorId(req),
       updated_by_staff_id: actorId(req)
     }));
+    const database = await getStaffTenantMutationClient(req, supabase);
+    const scope = env.tenantRuntimeWritesEnabled ? getTenantRequestScope(req) : null;
+    const ownedRows = rows.map((row) => ({
+      ...(scope ? { tenant_id: scope.tenantId, property_id: scope.propertyId } : {}),
+      ...row,
+      hotel_slug: scope?.propertySlug || hotelSlug
+    }));
     const result = rows.length
-      ? await supabase.from("restaurant_tables").insert(rows).select("*")
+      ? await database.from("restaurant_tables").insert(ownedRows).select("*")
       : { data: [], error: null };
 
     if (result.error) throw result.error;
@@ -337,7 +355,8 @@ router.patch("/tables/:id", requireStaffAuth, requireStaffManagerAccess, require
       }
     }
 
-    let update = supabase
+    const database = await getStaffTenantMutationClient(req, supabase);
+    let update = database
       .from("restaurant_tables")
       .update({
         ...parsed.value,
@@ -382,9 +401,16 @@ router.patch("/table-master/settings", requireStaffAuth, requireStaffManagerAcce
       }
     }
 
-    const { data, error } = await supabase
+    const database = await getStaffTenantMutationClient(req, supabase);
+    const scope = env.tenantRuntimeWritesEnabled ? getTenantRequestScope(req) : null;
+    const { data, error } = await database
       .from("hotel_ordering_settings")
-      .upsert({ hotel_slug: hotelSlug, enforce_table_master: enforce, updated_at: new Date().toISOString() }, { onConflict: "hotel_slug" })
+      .upsert({
+        ...(scope ? { tenant_id: scope.tenantId, property_id: scope.propertyId } : {}),
+        hotel_slug: scope?.propertySlug || hotelSlug,
+        enforce_table_master: enforce,
+        updated_at: new Date().toISOString()
+      }, { onConflict: "hotel_slug" })
       .select("hotel_slug,enforce_table_master")
       .single();
 
