@@ -154,6 +154,8 @@ function getReadinessChecks() {
     !env.authLegacyTokenAccepted;
   const sessionSecurityReady =
     !sessionSecurityEnabled || (
+      env.authRefreshCookieSecure &&
+      ["lax", "strict", "none"].includes(env.authRefreshCookieSameSite) &&
       env.tenantRuntimeEnabled &&
       hasText(env.tenantDatabaseUrl) &&
       String(env.accessTokenSecret || "").length >= 32 &&

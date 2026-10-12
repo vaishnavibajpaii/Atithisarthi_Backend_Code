@@ -10,8 +10,10 @@ function getRequiredEnv(name) {
   return value;
 }
 
+const nodeEnv = getEnv("NODE_ENV", "development").trim().toLowerCase();
+
 const env = {
-nodeEnv: getEnv("NODE_ENV", "Production"),
+nodeEnv,
 port: Number(getEnv("PORT", "10000")),
 
 
@@ -64,6 +66,10 @@ port: Number(getEnv("PORT", "10000")),
     getEnv("AUTH_RBAC_ENFORCEMENT_ENABLED", "false") === "true",
   authLegacyTokenAccepted:
     getEnv("AUTH_LEGACY_TOKEN_ACCEPTED", "true") === "true",
+  authRefreshCookieSecure:
+    getEnv("AUTH_REFRESH_COOKIE_SECURE", nodeEnv === "production" ? "true" : "false") === "true",
+  authRefreshCookieSameSite:
+    getEnv("AUTH_REFRESH_COOKIE_SAME_SITE", "lax").trim().toLowerCase(),
   accessTokenSecret: getEnv("ACCESS_TOKEN_SECRET", ""),
   refreshTokenHmacSecret: getEnv("REFRESH_TOKEN_HMAC_SECRET", ""),
   authAccessTokenTtlSeconds: Number(
@@ -110,8 +116,8 @@ port: Number(getEnv("PORT", "10000")),
     getEnv("PAYMENT_WEBHOOK_WORKER_ENABLED", "false") === "true",
   paymentWebhookWorkerIntervalMs: Number(getEnv("PAYMENT_WEBHOOK_WORKER_INTERVAL_MS", "5000")),
 
-  isProduction: getEnv("NODE_ENV", "development") === "production",
-  isDevelopment: getEnv("NODE_ENV", "development") === "development"
+  isProduction: nodeEnv === "production",
+  isDevelopment: nodeEnv === "development"
 };
 
 module.exports = { env };

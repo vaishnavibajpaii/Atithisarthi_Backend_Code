@@ -20,6 +20,8 @@ process.env.AUTH_REFRESH_TOKEN_TTL_SECONDS = "604800";
 process.env.AUTH_TOKEN_ISSUER = "task4-test-api";
 process.env.AUTH_TOKEN_AUDIENCE = "task4-test-web";
 process.env.AUTH_RBAC_ENFORCEMENT_ENABLED = "false";
+process.env.AUTH_REFRESH_COOKIE_SECURE = "true";
+process.env.AUTH_REFRESH_COOKIE_SAME_SITE = "none";
 process.env.FRONTEND_URL = "https://hotel.example.com";
 process.env.ADMIN_URL = "https://admin.example.com";
 
@@ -163,6 +165,16 @@ test("login creates a revocable server session and 15-minute access token", asyn
   assert.equal(decoded.exp - decoded.iat, 900);
   assert.equal(decoded.principal_type, "hotel_staff");
   assert.equal(decoded.role, undefined);
+  let cookieOptions;
+  auth.setRefreshCookie({
+    cookie(_name, _value, options) {
+      cookieOptions = options;
+    }
+  }, auth.PRINCIPAL_HOTEL_STAFF, login.refreshCredential);
+  assert.equal(cookieOptions.httpOnly, true);
+  assert.equal(cookieOptions.secure, true);
+  assert.equal(cookieOptions.sameSite, "none");
+  assert.equal(cookieOptions.path, "/api/staff");
 });
 
 test("valid access is accepted; expired and invalid-signature tokens are rejected", async () => {

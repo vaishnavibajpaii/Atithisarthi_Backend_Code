@@ -347,8 +347,8 @@ function refreshCookiePath(principalType) {
 function refreshCookieOptions(principalType) {
   return {
     httpOnly: true,
-    secure: env.isProduction,
-    sameSite: "lax",
+    secure: env.authRefreshCookieSecure,
+    sameSite: env.authRefreshCookieSameSite,
     path: refreshCookiePath(principalType),
     maxAge: env.authRefreshTokenTtlSeconds * 1000
   };
