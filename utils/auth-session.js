@@ -335,7 +335,7 @@ function refreshCookieName(principalType) {
   const suffix = normalizePrincipalType(principalType) === PRINCIPAL_PLATFORM_ADMIN
     ? "admin_refresh"
     : "staff_refresh";
-  return env.isProduction ? `__Secure-atithi_${suffix}` : `atithi_${suffix}`;
+  return env.authRefreshCookieSecure ? `__Secure-atithi_${suffix}` : `atithi_${suffix}`;
 }
 
 function refreshCookiePath(principalType) {
