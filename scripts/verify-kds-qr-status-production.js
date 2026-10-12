@@ -65,10 +65,18 @@ assert.match(staffHtml, /overscroll-behavior-inline:\s*contain/);
 assert.match(staffJs, /if \(!document\.hidden\) updateStaffKitchenDisplayClock\(\)/);
 assert.match(
   staffJs,
-  /staffAutoRefreshTimer = window\.setInterval\(\(\) => \{\s*if \(document\.hidden\) return;/
+  /staffAutoRefreshTimer = window\.setInterval\(\(\) => \{\s*void refreshStaffOperationalData\(\{ silent: true \}\);\s*\}, intervalMs\);/
 );
 assert.match(staffJs, /const requestController = new AbortController\(\)/);
-assert.match(staffJs, /STAFF_KDS_AUTO_REFRESH_INTERVAL_MS = 3 \* 1000/);
+assert.match(staffJs, /STAFF_KDS_AUTO_REFRESH_INTERVAL_MS = 5 \* 1000/);
+assert.match(
+  staffJs,
+  /staffAutoRefreshInFlight \|\|[\s\S]*?!getStaffToken\(\)[\s\S]*?isStaffActionInProgress\(\)/
+);
+assert.match(
+  staffJs,
+  /document\.addEventListener\("visibilitychange"[\s\S]*?if \(document\.hidden\)[\s\S]*?refreshStaffOperationalData\(\{ silent: true \}\)/
+);
 
 const qrScripts = getScripts(qrHtml);
 assert.deepStrictEqual(qrScripts.map(({ src }) => src), [

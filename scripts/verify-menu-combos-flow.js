@@ -13,6 +13,8 @@ const ordersRoutesPath = path.join(projectRoot, "backend", "routes", "orders.js"
 const paymentsRoutesPath = path.join(projectRoot, "backend", "routes", "payments.js");
 const trackingRoutesPath = path.join(projectRoot, "backend", "routes", "order-tracking.js");
 const menuCombosUtilPath = path.join(projectRoot, "backend", "utils", "menu-combos.js");
+const publicMenuPresentationPath = path.join(projectRoot, "backend", "utils", "public-menu-presentation.js");
+const staffMenuPresentationPath = path.join(projectRoot, "backend", "utils", "staff-menu-presentation.js");
 const orderItemSnapshotsUtilPath = path.join(projectRoot, "backend", "utils", "order-item-snapshots.js");
 
 const adminHtmlPath = path.join(projectRoot, "frontend", "admin.html");
@@ -47,6 +49,14 @@ function main() {
   const paymentsRoutesSource = readFileOrExit(paymentsRoutesPath, "payments routes");
   const trackingRoutesSource = readFileOrExit(trackingRoutesPath, "order tracking routes");
   const menuCombosUtilSource = readFileOrExit(menuCombosUtilPath, "menu combos util");
+  const publicMenuPresentationSource = readFileOrExit(
+    publicMenuPresentationPath,
+    "public menu presentation"
+  );
+  const staffMenuPresentationSource = readFileOrExit(
+    staffMenuPresentationPath,
+    "staff menu presentation"
+  );
   const orderItemSnapshotsUtilSource = readFileOrExit(
     orderItemSnapshotsUtilPath,
     "order item snapshots util"
@@ -125,13 +135,13 @@ function main() {
     },
     {
       label: "public combo visibility guard",
-      source: publicRoutesSource,
-      pattern: /isComboItem && !isMenuComboPresentationCurrentlyAvailable\(comboPresentation\)/m
+      source: publicMenuPresentationSource,
+      pattern: /isComboItem\s*&&\s*!isMenuComboPresentationCurrentlyAvailable\(comboPresentation\)/m
     },
     {
       label: "staff combo visibility guard",
-      source: staffRoutesSource,
-      pattern: /return isMenuComboPresentationCurrentlyAvailable\(comboPresentation\);/m
+      source: staffMenuPresentationSource,
+      pattern: /!isComboItem \|\|[\s\S]*isMenuComboPresentationCurrentlyAvailable\(comboPresentation\)/m
     },
     {
       label: "public order combo validation",

@@ -25,6 +25,15 @@ const {
   normalizeStaffKdsRole,
   isStaffKdsRoleAllowed
 } = require("../utils/auth");
+const {
+  PRINCIPAL_HOTEL_STAFF,
+  createSession,
+  getStaffLoginCandidates,
+  recordSecurityEvent,
+  setRefreshCookie
+} = require("../utils/auth-session");
+const { logoutHandler, refreshHandler } = require("../utils/auth-session-controller");
+const { PERMISSIONS, hasPermission } = require("../utils/permissions");
 const { requireStaffAuth, requireStaffManagerAccess } = require("../middleware/require-staff-auth");
 const {
   requireHotelFeature,
@@ -2679,6 +2688,15 @@ function isValidStaffKdsOrderId(orderId = "") {
 
 function canStaffPerformKdsTransition(req, nextStatus = "") {
   const target = normalizeStatusValue(nextStatus);
+  if (env.authRbacEnforcementEnabled) {
+    if (STAFF_KDS_KITCHEN_TARGETS.includes(target)) {
+      return hasPermission(req.authPrincipal, PERMISSIONS.KDS_PREPARE);
+    }
+    if (STAFF_KDS_EXPO_TARGETS.includes(target)) {
+      return hasPermission(req.authPrincipal, PERMISSIONS.KDS_SERVE);
+    }
+    return hasPermission(req.authPrincipal, PERMISSIONS.KDS_OVERRIDE);
+  }
   if (STAFF_KDS_KITCHEN_TARGETS.includes(target)) {
     return isStaffKdsRoleAllowed(req.staffKdsRole, ["kitchen"]);
   }
@@ -2926,21 +2944,35 @@ router.post("/login", validateBody(staffLoginSchema), async (req, res) => {
     const { hotelSlug, pin } = req.validatedBody;
     const normalizedHotelSlug = String(hotelSlug || "").trim();
 
-    const { data: staffAccessRows, error } = await supabase
-      .from("hotel_staff_access")
-      .select("*")
-      .eq("hotel_slug", normalizedHotelSlug)
-      .eq("is_active", true);
-
-    if (error) {
-      if (isMissingStaffAccessRelationError(error)) {
-        return res.status(503).json({
-          success: false,
-          message: "Staff access is not initialized yet"
-        });
+    let staffAccessRows;
+    if (env.authSessionIssuanceEnabled) {
+      const candidates = await getStaffLoginCandidates(normalizedHotelSlug);
+      staffAccessRows = candidates.map((candidate) => ({
+        id: candidate.principal_id,
+        hotel_slug: candidate.hotel_slug,
+        display_name: candidate.display_name,
+        role: candidate.role,
+        kds_role: candidate.kds_role,
+        tenant_id: candidate.tenant_id,
+        property_id: candidate.property_id,
+        pin_hash: candidate.pin_hash
+      }));
+    } else {
+      const result = await supabase
+        .from("hotel_staff_access")
+        .select("*")
+        .eq("hotel_slug", normalizedHotelSlug)
+        .eq("is_active", true);
+      if (result.error) {
+        if (isMissingStaffAccessRelationError(result.error)) {
+          return res.status(503).json({
+            success: false,
+            message: "Staff access is not initialized yet"
+          });
+        }
+        throw result.error;
       }
-
-      throw error;
+      staffAccessRows = result.data;
     }
 
     const activeAccessRows = Array.isArray(staffAccessRows) ? staffAccessRows : [];
@@ -2956,6 +2988,14 @@ router.post("/login", validateBody(staffLoginSchema), async (req, res) => {
     }
 
     if (!matchedStaffAccess) {
+      if (env.authSessionIssuanceEnabled) {
+        await recordSecurityEvent({
+          eventType: "login_failure",
+          outcome: "failure",
+          requestId: req.requestId || null,
+          safeContext: { principal_kind: PRINCIPAL_HOTEL_STAFF }
+        }).catch(() => undefined);
+      }
       return res.status(401).json({
         success: false,
         message: "Invalid hotel slug or PIN"
@@ -2968,30 +3008,53 @@ router.post("/login", validateBody(staffLoginSchema), async (req, res) => {
           propertyId: matchedStaffAccess.property_id,
           propertySlug: matchedStaffAccess.hotel_slug
         })
-      : supabase;
-    const loginAuditResult = await loginAuditDatabase
-      .from("hotel_staff_access")
-      .update({ last_login_at: new Date().toISOString() })
-      .eq("id", matchedStaffAccess.id)
-      .eq("hotel_slug", matchedStaffAccess.hotel_slug);
-    if (loginAuditResult.error) {
-      logger.warn("Staff last-login audit update failed", {
-        hotelSlug: matchedStaffAccess.hotel_slug,
-        staffUserId: String(matchedStaffAccess.id || ""),
-        code: String(loginAuditResult.error.code || "STAFF_LOGIN_AUDIT_FAILED")
-      });
+      : env.authSessionIssuanceEnabled ? null : supabase;
+    if (loginAuditDatabase) {
+      const loginAuditResult = await loginAuditDatabase
+        .from("hotel_staff_access")
+        .update({ last_login_at: new Date().toISOString() })
+        .eq("id", matchedStaffAccess.id)
+        .eq("hotel_slug", matchedStaffAccess.hotel_slug);
+      if (loginAuditResult.error) {
+        logger.warn("Staff last-login audit update failed", {
+          hotelSlug: matchedStaffAccess.hotel_slug,
+          staffUserId: String(matchedStaffAccess.id || ""),
+          code: String(loginAuditResult.error.code || "STAFF_LOGIN_AUDIT_FAILED")
+        });
+      }
     }
 
-    const token = signStaffToken(matchedStaffAccess);
-    const featureConfig = await fetchHotelFeatureConfig(
-      supabase,
-      matchedStaffAccess.hotel_slug
-    );
+    let token;
+    let accessExpiresAt;
+    if (env.authSessionIssuanceEnabled) {
+      const session = await createSession({
+        principalType: PRINCIPAL_HOTEL_STAFF,
+        principalId: matchedStaffAccess.id,
+        userAgent: req.headers["user-agent"] || "",
+        requestId: req.requestId || null
+      });
+      token = session.accessToken;
+      accessExpiresAt = session.accessExpiresAt.toISOString();
+      setRefreshCookie(res, PRINCIPAL_HOTEL_STAFF, session.refreshCredential);
+    } else {
+      token = signStaffToken(matchedStaffAccess);
+    }
+    const featureConfig = env.authSessionIssuanceEnabled
+      ? await fetchTenantStaffSessionFeatures(
+          {
+            tenantId: matchedStaffAccess.tenant_id,
+            propertyId: matchedStaffAccess.property_id,
+            propertySlug: matchedStaffAccess.hotel_slug
+          },
+          matchedStaffAccess.hotel_slug
+        )
+      : await fetchHotelFeatureConfig(supabase, matchedStaffAccess.hotel_slug);
 
     res.json({
       success: true,
       message: "Staff login successful",
       token,
+      ...(accessExpiresAt ? { accessExpiresAt } : {}),
       staffUser: buildStaffUserResponse(matchedStaffAccess, featureConfig)
     });
   } catch (error) {
@@ -3002,6 +3065,13 @@ router.post("/login", validateBody(staffLoginSchema), async (req, res) => {
     });
   }
 });
+
+router.post("/refresh", refreshHandler(PRINCIPAL_HOTEL_STAFF));
+router.post(
+  "/logout",
+  requireStaffAuth,
+  logoutHandler(PRINCIPAL_HOTEL_STAFF)
+);
 
 router.get(
   "/menu",

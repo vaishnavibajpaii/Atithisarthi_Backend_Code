@@ -80,7 +80,11 @@ function main() {
     createRouteMarker: 'router.post("/bookings"'
   });
 
-  assertIncludes(publicRoute, '.eq("hotel_slug", slug)', "public tenant scope");
+  assertIncludes(publicRoute, '.eq("hotel_slug", hotelSlug)', "public legacy tenant scope");
+  assertIncludes(publicRoute, "getTenantMutationClient(req, supabase)", "public restricted mutation boundary");
+  assertIncludes(publicRoute, "getTenantRequestScope(req)", "public canonical tenant context");
+  assertIncludes(publicRoute, "tenant_id: scope.tenantId", "public canonical tenant ownership");
+  assertIncludes(publicRoute, "property_id: scope.propertyId", "public canonical property ownership");
   assertIncludes(adminRoute, '.eq("hotel_slug", hotelSlug)', "admin tenant scope");
   assertIncludes(staffRoute, "const hotelSlug = normalizeText(req.staffHotelSlug, 120);", "staff tenant scope");
   assertIncludes(staffRoute, '.eq("hotel_slug", hotelSlug)', "staff tenant scope");

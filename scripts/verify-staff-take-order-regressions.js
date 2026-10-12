@@ -5,6 +5,10 @@ const { performance } = require("perf_hooks");
 
 const projectRoot = path.resolve(__dirname, "..", "..");
 const staffRoute = fs.readFileSync(path.join(projectRoot, "backend", "routes", "staff.js"), "utf8");
+const staffMenuPresentation = fs.readFileSync(
+  path.join(projectRoot, "backend", "utils", "staff-menu-presentation.js"),
+  "utf8"
+);
 const staffValidator = fs.readFileSync(path.join(projectRoot, "backend", "validators", "staff.js"), "utf8");
 const staffScript = fs.readFileSync(path.join(projectRoot, "frontend", "js", "staff-orders.js"), "utf8");
 const staffHtml = fs.readFileSync(path.join(projectRoot, "frontend", "staff-orders.html"), "utf8");
@@ -106,7 +110,12 @@ function main() {
   );
   requirePattern(
     staffRoute,
-    /const menuVersion = createMenuVersion[\s\S]*?Cache-Control", "private, no-cache"[\s\S]*?menuVersion,/m,
+    /const payload = buildStaffMenuPayload\(\{[\s\S]*?res\.set\("Cache-Control", "private, no-cache"\);[\s\S]*?res\.json\(payload\);/m,
+    "versioned authenticated menu route"
+  );
+  requirePattern(
+    staffMenuPresentation,
+    /menuVersion:\s*createMenuVersion\(\{[\s\S]*?categories:\s*visibleCategories,[\s\S]*?items/m,
     "versioned authenticated menu response"
   );
   requirePattern(

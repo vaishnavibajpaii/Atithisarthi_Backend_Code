@@ -50,7 +50,7 @@ function main() {
     'router.patch("/orders/:id/status", requireAdminFoodModule',
     'router.patch("/orders/:id/billing", requireAdminFoodModule',
     'router.post("/menu-items", validateBody(menuItemSchema), requireAdminFoodModule',
-    'router.patch("/menu-items/:id", requireAdminFoodModule',
+    'router.patch("/menu-items/:id", validateBody(partialMenuItemSchema), requireAdminFoodModule',
     'router.delete("/menu-items/:id", requireAdminFoodModule',
     'router.post("/menu-combos", validateBody(comboMenuItemSchema), requireAdminFoodModule',
     'router.patch("/menu-combos/:id/active", requireAdminFoodModule',

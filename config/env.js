@@ -56,6 +56,24 @@ port: Number(getEnv("PORT", "10000")),
 
   jwtSecret: getRequiredEnv("JWT_SECRET"),
   jwtExpiresIn: getEnv("JWT_EXPIRES_IN", "7d"),
+  authSessionIssuanceEnabled:
+    getEnv("AUTH_SESSION_ISSUANCE_ENABLED", "false") === "true",
+  authRefreshEnabled:
+    getEnv("AUTH_REFRESH_ENABLED", "false") === "true",
+  authRbacEnforcementEnabled:
+    getEnv("AUTH_RBAC_ENFORCEMENT_ENABLED", "false") === "true",
+  authLegacyTokenAccepted:
+    getEnv("AUTH_LEGACY_TOKEN_ACCEPTED", "true") === "true",
+  accessTokenSecret: getEnv("ACCESS_TOKEN_SECRET", ""),
+  refreshTokenHmacSecret: getEnv("REFRESH_TOKEN_HMAC_SECRET", ""),
+  authAccessTokenTtlSeconds: Number(
+    getEnv("AUTH_ACCESS_TOKEN_TTL_SECONDS", "900")
+  ),
+  authRefreshTokenTtlSeconds: Number(
+    getEnv("AUTH_REFRESH_TOKEN_TTL_SECONDS", "604800")
+  ),
+  authTokenIssuer: getEnv("AUTH_TOKEN_ISSUER", "atithisarthi-api"),
+  authTokenAudience: getEnv("AUTH_TOKEN_AUDIENCE", "atithisarthi-web"),
   qrContextSigningSecret: getEnv("QR_CONTEXT_SIGNING_SECRET", ""),
   qrContextStrictRequired:
     getEnv("QR_CONTEXT_STRICT_REQUIRED", "false") === "true",

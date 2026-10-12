@@ -70,7 +70,7 @@ function main() {
   const routeChecks = [
     {
       label: "staff menu route",
-      pattern: /router\.get\(\s*"\/menu",\s*requireStaffAuth,\s*requireStaffFoodModule,\s*async\s*\(req,\s*res\)\s*=>/m
+      pattern: /router\.get\(\s*"\/menu",\s*requireStaffAuth,\s*attachStaffMenuTenantContext,\s*requireStaffMenuFoodModule,\s*async\s*\(req,\s*res\)\s*=>/m
     },
     {
       label: "staff create order route",

@@ -147,6 +147,26 @@ function getReadinessChecks() {
   const tenantRuntimeWritesReady =
     !env.tenantRuntimeWritesEnabled ||
     (env.tenantRuntimeEnabled && hasText(env.tenantDatabaseUrl));
+  const sessionSecurityEnabled =
+    env.authSessionIssuanceEnabled ||
+    env.authRefreshEnabled ||
+    env.authRbacEnforcementEnabled ||
+    !env.authLegacyTokenAccepted;
+  const sessionSecurityReady =
+    !sessionSecurityEnabled || (
+      env.tenantRuntimeEnabled &&
+      hasText(env.tenantDatabaseUrl) &&
+      String(env.accessTokenSecret || "").length >= 32 &&
+      String(env.refreshTokenHmacSecret || "").length >= 32 &&
+      Number.isSafeInteger(env.authAccessTokenTtlSeconds) &&
+      env.authAccessTokenTtlSeconds >= 60 &&
+      env.authAccessTokenTtlSeconds <= 1200 &&
+      Number.isSafeInteger(env.authRefreshTokenTtlSeconds) &&
+      env.authRefreshTokenTtlSeconds >= 300 &&
+      env.authRefreshTokenTtlSeconds <= 691200 &&
+      hasText(env.authTokenIssuer) &&
+      hasText(env.authTokenAudience)
+    );
 
   return [
     buildReadinessCheck(
@@ -265,6 +285,12 @@ function getReadinessChecks() {
       tenantRuntimeWritesReady,
       "tenant_writes_require_tenant_runtime",
       env.tenantRuntimeWritesEnabled
+    ),
+    buildReadinessCheck(
+      "auth_session_security",
+      sessionSecurityReady,
+      "session_security_requires_restricted_database_strong_secrets_and_valid_ttls",
+      sessionSecurityEnabled
     )
   ];
 }

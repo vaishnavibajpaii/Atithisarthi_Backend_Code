@@ -267,6 +267,81 @@ async function runTenantTransaction(
   }
 }
 
+async function verifyRestrictedRuntimeRole(client) {
+  const identityResult = await client.query(
+    "SELECT rolname, rolcanlogin, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user"
+  );
+  const identity = identityResult.rows && identityResult.rows[0];
+
+  if (
+    !identity ||
+    identity.rolname !== "app_tenant_runtime" ||
+    identity.rolcanlogin !== true ||
+    identity.rolsuper !== false ||
+    identity.rolbypassrls !== false
+  ) {
+    throw createConfigError(
+      "TENANT_DATABASE_ROLE_UNSAFE",
+      "Tenant database connection is not using the restricted runtime role"
+    );
+  }
+}
+
+async function runAuthTransaction(pool, work, options = {}) {
+  if (!pool || typeof pool.connect !== "function") {
+    throw createConfigError(
+      "TENANT_DATABASE_POOL_INVALID",
+      "A PostgreSQL pool is required"
+    );
+  }
+  if (typeof work !== "function") {
+    throw createConfigError(
+      "TENANT_DATABASE_WORK_INVALID",
+      "Authentication transaction work callback is required"
+    );
+  }
+
+  const statementTimeoutMs = normalizePositiveInteger(
+    options.statementTimeoutMs,
+    normalizePositiveInteger(env.tenantDatabaseStatementTimeoutMs, 15000),
+    "statementTimeoutMs"
+  );
+  const client = await pool.connect();
+  let transactionStarted = false;
+
+  try {
+    await client.query("BEGIN");
+    transactionStarted = true;
+    if (options.readOnly === true) await client.query("SET TRANSACTION READ ONLY");
+    await verifyRestrictedRuntimeRole(client);
+    await client.query(
+      "SELECT set_config('statement_timeout', $1, true)",
+      [`${statementTimeoutMs}ms`]
+    );
+    const result = await work(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    if (transactionStarted) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        logger.error("Authentication database rollback failed", {
+          code: rollbackError?.code || "UNKNOWN",
+          message: rollbackError?.message || "Unknown rollback error"
+        });
+      }
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function withAuthTransaction(work, options = {}) {
+  return runAuthTransaction(getTenantPool(), work, options);
+}
+
 async function withTenantTransaction(
   context,
   work,
@@ -294,6 +369,8 @@ async function closeTenantPool() {
 module.exports = {
   closeTenantPool,
   normalizeTenantContext,
+  runAuthTransaction,
   runTenantTransaction,
+  withAuthTransaction,
   withTenantTransaction
 };

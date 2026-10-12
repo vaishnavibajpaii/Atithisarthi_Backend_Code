@@ -49,7 +49,7 @@ function signAdminToken(adminUser) {
 function verifyAdminToken(token) {
   const decoded = jwt.verify(token, env.jwtSecret);
 
-  if (decoded.scope && decoded.scope !== ADMIN_TOKEN_SCOPE) {
+  if (decoded.scope !== ADMIN_TOKEN_SCOPE) {
     throw new Error("Invalid admin token scope");
   }
 

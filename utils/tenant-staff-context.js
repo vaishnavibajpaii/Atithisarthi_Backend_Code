@@ -3,6 +3,7 @@
 const { supabase } = require("./supabase");
 const {
   attachTenantRequestContext,
+  getTenantRequestScope,
   normalizePropertySlug
 } = require("./tenant-request-context");
 
@@ -44,6 +45,23 @@ async function attachCanonicalStaffTenantContext(
   req,
   options = {}
 ) {
+  if (req?.tenant && req?.property && req?.tenantContext) {
+    const scope = getTenantRequestScope(req);
+    const staffSlug = normalizePropertySlug(
+      req?.staffHotelSlug || req?.staffUser?.hotelSlug
+    );
+    if (scope.propertySlug !== staffSlug) {
+      throw createStaffTenantContextError(
+        "TENANT_STAFF_CONTEXT_CONFLICT",
+        "Staff hotel does not match the authenticated session context"
+      );
+    }
+    return {
+      id: scope.propertyId,
+      tenant_id: scope.tenantId,
+      slug: scope.propertySlug
+    };
+  }
   const hotel = await fetchCanonicalStaffHotel(
     req?.staffHotelSlug || req?.staffUser?.hotelSlug,
     options
