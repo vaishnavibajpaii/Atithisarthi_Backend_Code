@@ -232,6 +232,49 @@ begin
 end;
 $task5_vault_create_grant$;
 
+-- vault.decrypted_secrets is intentionally used only by the isolated NOLOGIN
+-- secret owner. Supabase Vault's view invokes one provider-managed internal
+-- decrypt helper as the querying role, so grant only that exact view dependency
+-- to the same restricted owner. Do not alter provider-managed ACLs.
+do $task5_vault_decrypt_dependency_grant$
+declare
+  target record;
+  dependency_count integer := 0;
+begin
+  for target in
+    select distinct p.oid, p.oid::regprocedure as routine_name
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    join pg_depend dep on dep.refobjid = p.oid
+    join pg_rewrite rw on rw.oid = dep.objid
+    where n.nspname = 'vault'
+      and p.proname = '_crypto_aead_det_decrypt'
+      and rw.ev_class = 'vault.decrypted_secrets'::regclass
+  loop
+    dependency_count := dependency_count + 1;
+
+    if not has_function_privilege(
+      'app_payment_gateway_secret_owner', target.oid, 'EXECUTE'
+    ) then
+      if not has_function_privilege(
+        current_user, target.oid, 'EXECUTE WITH GRANT OPTION'
+      ) then
+        raise exception 'TASK5_VAULT_DECRYPT_GRANT_OPTION_REQUIRED';
+      end if;
+      execute format(
+        'grant execute on function %s to app_payment_gateway_secret_owner',
+        target.routine_name
+      );
+    end if;
+  end loop;
+
+  if dependency_count <> 1 then
+    raise exception 'TASK5_VAULT_DECRYPT_DEPENDENCY_UNEXPECTED count=%',
+      dependency_count;
+  end if;
+end;
+$task5_vault_decrypt_dependency_grant$;
+
 create table public.property_payment_gateway_policies (
   tenant_id uuid not null,
   property_id bigint not null,
@@ -732,6 +775,7 @@ $task5_forbid_audit_mutation_fn$;
 create or replace function public.task5_assert_active_account_ready()
 returns trigger
 language plpgsql
+security definer
 set search_path = pg_catalog, public
 as $task5_assert_active_account_ready_fn$
 declare
@@ -1143,6 +1187,29 @@ grant execute on function
   public.task5_guard_gateway_webhook_secret(),
   public.task5_assert_active_account_ready()
 to app_payment_gateway_secret_owner;
+
+-- The readiness constraint is initially deferred, so PostgreSQL fires it at
+-- COMMIT after the outer SECURITY DEFINER writer has returned. Isolate its
+-- table reads behind the same NOLOGIN owner instead of granting the hotel
+-- runtime any direct gateway-table access.
+do $task5_deferred_trigger_owner$
+begin
+  execute format(
+    'grant app_payment_gateway_secret_owner to %I with admin false, inherit false, set true granted by %I',
+    current_user,
+    current_user
+  );
+  grant create on schema public to app_payment_gateway_secret_owner;
+  alter function public.task5_assert_active_account_ready()
+    owner to app_payment_gateway_secret_owner;
+  revoke create on schema public from app_payment_gateway_secret_owner;
+  execute format(
+    'revoke app_payment_gateway_secret_owner from %I granted by %I restrict',
+    current_user,
+    current_user
+  );
+end;
+$task5_deferred_trigger_owner$;
 
 comment on table public.property_payment_gateway_policies is
   'Task 5 server-controlled explicit legacy-global versus per-property gateway selection.';

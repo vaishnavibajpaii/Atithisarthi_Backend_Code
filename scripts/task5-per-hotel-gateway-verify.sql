@@ -97,7 +97,7 @@ with verification as (
 
   union all
   select 4, 'gateway_rls_policy_manifest',
-    (select count(*) = 14
+    (select count(*) = 15
      from pg_policy p
      join pg_class c on c.oid = p.polrelid
      join pg_namespace n on n.oid = c.relnamespace
@@ -109,8 +109,19 @@ with verification as (
          'payment_gateway_webhook_secrets',
          'payment_gateway_audit_events'
        )
-       and (select oid from pg_roles where rolname = 'app_payment_gateway_secret_owner') = any(p.polroles)),
-    jsonb_build_object('expected', 14, 'observed', (
+       and (select oid from pg_roles where rolname = 'app_payment_gateway_secret_owner') = any(p.polroles))
+    and (select count(*) = 1
+      from pg_policy p
+      join pg_class c on c.oid = p.polrelid
+      join pg_namespace n on n.oid = c.relnamespace
+      where n.nspname = 'public'
+        and c.relname = 'payment_gateway_accounts'
+        and p.polname = 'task5_webhook_ref_selector'
+        and p.polcmd = 'r'
+        and p.polpermissive
+        and (select oid from pg_roles where rolname = 'app_payment_gateway_secret_owner') = any(p.polroles)
+        and pg_get_expr(p.polqual, p.polrelid) like '%app.task5_webhook_ref%'),
+    jsonb_build_object('expected', 15, 'observed', (
       select count(*)
       from pg_policy p
       join pg_class c on c.oid = p.polrelid
@@ -124,6 +135,18 @@ with verification as (
           'payment_gateway_audit_events'
         )
         and (select oid from pg_roles where rolname = 'app_payment_gateway_secret_owner') = any(p.polroles)
+    ), 'bounded_webhook_selector_policies', (
+      select count(*)
+      from pg_policy p
+      join pg_class c on c.oid = p.polrelid
+      join pg_namespace n on n.oid = c.relnamespace
+      where n.nspname = 'public'
+        and c.relname = 'payment_gateway_accounts'
+        and p.polname = 'task5_webhook_ref_selector'
+        and p.polcmd = 'r'
+        and p.polpermissive
+        and (select oid from pg_roles where rolname = 'app_payment_gateway_secret_owner') = any(p.polroles)
+        and pg_get_expr(p.polqual, p.polrelid) like '%app.task5_webhook_ref%'
     ))
 
   union all

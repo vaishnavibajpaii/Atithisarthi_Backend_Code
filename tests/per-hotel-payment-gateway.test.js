@@ -258,6 +258,31 @@ test("restricted gateway owner alone can execute configuration trigger guards", 
   assert.doesNotMatch(migration, /grant execute[\s\S]*to app_tenant_runtime/i);
 });
 
+test("deferred readiness trigger uses the restricted owner without table grants to runtime", () => {
+  const fs = require("node:fs");
+  const migration = fs.readFileSync(
+    path.join(__dirname, "../scripts/task5-gateway-deferred-trigger-security-fix.sql"),
+    "utf8"
+  );
+  assert.match(migration, /task5_assert_active_account_ready\(\)[\s\S]*security definer/i);
+  assert.match(migration, /owner to app_payment_gateway_secret_owner/i);
+  assert.match(migration, /TASK5_RUNTIME_GATEWAY_ACCESS_EXPANDED/);
+  assert.doesNotMatch(migration, /grant\s+select[\s\S]*to\s+app_tenant_runtime/i);
+});
+
+test("Vault decrypt access is limited to the exact view dependency and restricted owner", () => {
+  const fs = require("node:fs");
+  const migration = fs.readFileSync(
+    path.join(__dirname, "../scripts/task5-vault-decrypt-execute-fix.sql"),
+    "utf8"
+  );
+  assert.match(migration, /rw\.ev_class = 'vault\.decrypted_secrets'::regclass/);
+  assert.match(migration, /p\.proname = '_crypto_aead_det_decrypt'/);
+  assert.match(migration, /to app_payment_gateway_secret_owner/);
+  assert.match(migration, /TASK5_RUNTIME_VAULT_ACCESS_EXPANDED/);
+  assert.doesNotMatch(migration, /grant execute[\s\S]*to app_tenant_runtime/i);
+});
+
 test("hotel owner UI keeps credentials write-only and cutover explicit", () => {
   const fs = require("node:fs");
   const html = fs.readFileSync(path.join(__dirname, "../../frontend/staff-orders.html"), "utf8");
