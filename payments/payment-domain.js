@@ -67,6 +67,9 @@ function validateCapturedEvidence({ intent, evidence }) {
   if (String(evidence.merchantRef || "") !== String(intent.merchant_ref || intent.merchantRef || "")) {
     throw new PaymentIntegrityError("MERCHANT_MISMATCH", "Payment merchant does not match the intent");
   }
+  if (String(evidence.credentialRef || "") !== String(intent.credential_ref || intent.credentialRef || "")) {
+    throw new PaymentIntegrityError("CREDENTIAL_MISMATCH", "Payment credential does not match the intent");
+  }
   if (String(evidence.providerOrderId || "") !== String(intent.provider_order_id || intent.providerOrderId || "")) {
     throw new PaymentIntegrityError("PROVIDER_ORDER_MISMATCH", "Provider order does not match the intent");
   }

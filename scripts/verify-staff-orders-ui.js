@@ -37,7 +37,7 @@ function verifyReferenceSidebarContracts(html, frontend, failures) {
   const sidebar = html.slice(start, end + "</aside>".length);
   const expectedViews = [
     "dashboard", "reports", "table-order", "orders", "kds", "support",
-    "rooms", "reservations", "inquiries", "contacts", "testimonials"
+    "rooms", "reservations", "inquiries", "contacts", "testimonials", "gateway"
   ];
   const actualViews = Array.from(
     sidebar.matchAll(/data-staff-view="([^"]+)"/g),
@@ -98,6 +98,7 @@ function verifyReferenceSidebarContracts(html, frontend, failures) {
     { name: "hotel footer update", pattern: /function\s+updateStaffWorkspaceHotelBadge[\s\S]*?staffSidebarHotelName[\s\S]*?sidebarHotelName\.textContent\s*=\s*hotelSlug/m },
     { name: "role footer update", pattern: /function\s+updateStaffWorkspaceHotelBadge[\s\S]*?staffSidebarRoleBadge[\s\S]*?Owner access[\s\S]*?Staff access[\s\S]*?classList\.toggle\("is-owner",\s*isManager\)/m },
     { name: "role-based destinations preserved", pattern: /function\s+applyStaffRoleWorkspaceAccess[\s\S]*?allowedViews\.includes\(view\)[\s\S]*?button\.hidden\s*=\s*!isAllowed/m },
+    { name: "gateway destination remains owner-only", pattern: /function\s+applyStaffRoleWorkspaceAccess[\s\S]*?data-staff-owner-only[\s\S]*?isStaffOwnerSession/m },
     { name: "mobile focus restoration preserved", pattern: /function\s+setStaffSidebarExpanded[\s\S]*?restoreFocus[\s\S]*?staffSidebarLastFocusedElement/m }
   ], failures);
 }

@@ -23,6 +23,7 @@ class PaymentIntentStore {
       business_order_id: input.businessOrderId || null,
       provider: input.provider, merchant_ref: input.merchantRef,
       credential_ref: input.credentialRef,
+      gateway_account_id: input.gatewayAccountId || null,
       expected_amount_minor: input.expectedAmountMinor, currency: input.currency,
       idempotency_key: input.idempotencyKey, request_digest: input.requestDigest,
       context: input.context || {}
@@ -90,6 +91,7 @@ class PaymentIntentStore {
       payment_intent_id: intent.id,
       provider: String(evidence?.provider || intent.provider || ""),
       merchant_ref: String(evidence?.merchantRef || intent.merchant_ref || ""),
+      credential_ref: String(evidence?.credentialRef || intent.credential_ref || ""),
       provider_order_id: String(evidence?.providerOrderId || "") || null,
       provider_payment_id: String(evidence?.providerPaymentId || "") || null,
       provider_status: String(evidence?.status || "") || null,

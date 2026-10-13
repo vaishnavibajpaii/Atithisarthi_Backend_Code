@@ -36,6 +36,7 @@ const staffRoomBookingRoute = require("./routes/staff-room-booking");
 const staffRoomManagementRoute = require("./routes/staff-room-management");
 const staffRoomCheckoutBillRoute = require("./routes/staff-room-checkout-bill");
 const staffFoodOrderBillRoute = require("./routes/staff-food-order-bill");
+const staffPaymentGatewayRoute = require("./routes/staff-payment-gateway");
 const adminRoomCheckoutBillRoute = require("./routes/admin-room-checkout-bill");
 const uploadRoute = require("./routes/upload");
 const paymentsRoute = require("./routes/payments");
@@ -114,6 +115,9 @@ function getReadinessChecks() {
     );
   const tenantRuntimeReady =
     !env.tenantRuntimeEnabled || hasText(env.tenantDatabaseUrl);
+  const perHotelPaymentGatewayReady =
+    !env.perHotelPaymentGatewayEnabled ||
+    (env.tenantRuntimeEnabled && hasText(env.tenantDatabaseUrl));
   const tenantPublicHotelReady =
     !env.tenantRuntimePublicHotelEnabled ||
     (env.tenantRuntimeEnabled && hasText(env.tenantDatabaseUrl));
@@ -210,6 +214,12 @@ function getReadinessChecks() {
       "payment_live_key",
       paymentLiveKeyReady,
       "test_payment_key_in_production"
+    ),
+    buildReadinessCheck(
+      "per_hotel_payment_gateway",
+      perHotelPaymentGatewayReady,
+      "per_hotel_gateway_requires_tenant_runtime",
+      env.perHotelPaymentGatewayEnabled
     ),
     buildReadinessCheck(
       "email_notifications",
@@ -467,6 +477,7 @@ app.use("/api/staff/room-booking", staffRoomBookingRoute);
 app.use("/api/staff/room-management", staffRoomManagementRoute);
 app.use("/api/staff/room-checkout-bill", staffRoomCheckoutBillRoute);
 app.use("/api/staff/food-order-bill", staffFoodOrderBillRoute);
+app.use("/api/staff/payment-gateway", staffPaymentGatewayRoute);
 app.use("/api/staff", staffRoute);
 app.use("/api/payments", paymentsRoute);
 app.use("/api/admin/upload", uploadRoute);

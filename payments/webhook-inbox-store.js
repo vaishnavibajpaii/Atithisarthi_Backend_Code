@@ -6,6 +6,8 @@ class WebhookInboxStore {
   async enqueue(event) {
     const row = {
       provider: event.provider, merchant_ref: event.merchantRef,
+      gateway_account_id: event.gatewayAccountId || null,
+      webhook_secret_ref: event.webhookSecretRef || null,
       provider_event_id: event.providerEventId, payload_digest: event.payloadDigest,
       event_type: event.eventType, payload: event.payload, status: "RECEIVED"
     };

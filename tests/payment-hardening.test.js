@@ -23,6 +23,7 @@ function intent(overrides = {}) {
     business_order_id: "101",
     provider: "razorpay",
     merchant_ref: "LEGACY_PLATFORM_RAZORPAY",
+    credential_ref: "MOCK_RAZORPAY_V1",
     expected_amount_minor: 14900,
     currency: "INR",
     status: "PENDING",
@@ -228,6 +229,9 @@ test("webhook worker processes captured, duplicate, authorized, failed, and out-
   };
   const record = (eventType, paymentId, eventId) => ({
     id: eventId,
+    provider: target.provider,
+    merchant_ref: target.merchant_ref,
+    gateway_account_id: null,
     provider_event_id: eventId,
     event_type: eventType,
     payload: {

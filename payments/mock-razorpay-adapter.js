@@ -61,6 +61,7 @@ class MockRazorpayAdapter {
     return {
       provider: this.provider,
       merchantRef: payment.merchantRef,
+      credentialRef: this.credentialRef,
       providerOrderId: payment.order_id,
       providerPaymentId: payment.id,
       amountMinor: payment.amount,

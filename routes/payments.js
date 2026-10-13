@@ -12,7 +12,6 @@ const {
   paymentVerifySchema
 } = require("../validators/payments");
 const {
-  getPaymentGatewayAdapter,
   getPaymentGatewayConfig,
   getPaymentGatewaySafetyIssue,
   isPaymentGatewayConfigured,
@@ -25,6 +24,12 @@ const {
 } = require("../payments/payment-domain");
 const { PaymentIntentStore, isMissingTask2ASchema } = require("../payments/payment-intent-store");
 const { finalizeProviderPayment } = require("../payments/payment-finalizer");
+const {
+  GatewayResolutionError,
+  PURPOSES,
+  resolvePaymentGateway
+} = require("../payments/payment-gateway-resolver");
+const { getTenantRequestScope } = require("../utils/tenant-request-context");
 const { notifyPaidOrderAfterFinalization } = require("../payments/paid-order-notification");
 const { publicPaymentInitLimiter } = require("../middleware/public-rate-limiters");
 const {
@@ -649,6 +654,11 @@ function getPaymentGatewayReadiness() {
     provider: config.provider,
     currency: config.currency,
     mode: config.isProduction ? "production" : "test",
+    perHotelGateway: {
+      enabled: !!env.perHotelPaymentGatewayEnabled,
+      policyControlled: true,
+      failClosed: true
+    },
     reason,
     hardening: {
       release: PAYMENT_HARDENING_RELEASE,
@@ -662,6 +672,7 @@ function getPaymentGatewayReadiness() {
       required: requiresWebhookSecret,
       configured: hasWebhookSecret,
       endpoint: "/api/payments/webhook",
+      perPropertyEndpointTemplate: "/api/payments/webhook/razorpay/{webhookRef}",
       worker: {
         enabled: !!env.paymentWebhookWorkerEnabled,
         intervalMs: env.paymentWebhookWorkerIntervalMs
@@ -1153,17 +1164,6 @@ router.post("/init", publicPaymentInitLimiter, validateBody(paymentInitSchema), 
   });
 
   try {
-    const readiness = getPaymentGatewayReadiness();
-
-    if (!readiness.checkoutAvailable) {
-      return res.status(503).json({
-        success: false,
-        message: "Payment gateway is not ready yet",
-        reason: readiness.reason,
-        paymentGateway: readiness
-      });
-    }
-
     const {
       hotelSlug,
       paymentMethod = "UPI",
@@ -1258,6 +1258,14 @@ router.post("/init", publicPaymentInitLimiter, validateBody(paymentInitSchema), 
     }
 
     const config = getPaymentGatewayConfig();
+    const tenantScope = getTenantRequestScope(req);
+    let gatewayResolution = await resolvePaymentGateway({
+      tenantId: tenantScope.tenantId,
+      propertyId: tenantScope.propertyId,
+      provider: config.provider,
+      purpose: PURPOSES.NEW_PAYMENT
+    });
+    let adapter = gatewayResolution.adapter;
     const receipt = buildReceipt(hotelSlug);
     const paymentRouteSettings = await getHotelPaymentRouteSettings(hotelSlug);
     paymentLogMeta = getPaymentLogMeta({
@@ -1268,7 +1276,10 @@ router.post("/init", publicPaymentInitLimiter, validateBody(paymentInitSchema), 
     });
     const amountMinor = toGatewayMinorAmount(paymentContext.totals.gatewayAmount);
     const paymentRouteTransfer = buildGatewayRouteTransfers({
-      config,
+      config: {
+        ...config,
+        routeTransfersEnabled: gatewayResolution.kind === "LEGACY_GLOBAL" && config.routeTransfersEnabled
+      },
       hotelSlug,
       orderContext: safeOrderContext,
       paymentContext,
@@ -1276,7 +1287,6 @@ router.post("/init", publicPaymentInitLimiter, validateBody(paymentInitSchema), 
       amountMinor,
       currency: config.currency
     });
-    const adapter = getPaymentGatewayAdapter();
     const paymentNotes = buildPaymentNotes({
         hotelSlug,
         orderContext: safeOrderContext,
@@ -1307,12 +1317,21 @@ router.post("/init", publicPaymentInitLimiter, validateBody(paymentInitSchema), 
     const intentResult = await paymentIntentStore.createOrReuse({
       hotelSlug, operation: PAYMENT_OPERATION, provider: adapter.provider,
       merchantRef: adapter.merchantRef, credentialRef: adapter.credentialRef,
+      gatewayAccountId: gatewayResolution.gatewayAccountId,
       expectedAmountMinor: amountMinor, currency: config.currency,
       idempotencyKey, requestDigest, context: intentContext
     });
     let paymentIntent = intentResult.intent;
 
     if (intentResult.reused) {
+      gatewayResolution = await resolvePaymentGateway({
+        tenantId: paymentIntent.tenant_id,
+        propertyId: paymentIntent.property_id,
+        provider: paymentIntent.provider,
+        purpose: PURPOSES.VERIFY,
+        paymentIntent
+      });
+      adapter = gatewayResolution.adapter;
       const existingOrder = await getIntentLinkedOrder(paymentIntent);
       if (paymentIntent.provider_order_id || paymentIntent.provider_creation_started_at) {
         return res.status(paymentIntent.provider_order_id ? 200 : 202)
@@ -1333,6 +1352,14 @@ router.post("/init", publicPaymentInitLimiter, validateBody(paymentInitSchema), 
         amountMinor, currency: config.currency, receipt, notes: paymentNotes,
         transfers: paymentRouteTransfer.transfers
       });
+      if (gatewayOrder.merchantRef !== paymentIntent.merchant_ref ||
+          gatewayOrder.credentialRef !== paymentIntent.credential_ref) {
+        throw new PaymentIntegrityError(
+          "PAYMENT_GATEWAY_BINDING_MISMATCH",
+          "Provider order credential does not match the PaymentIntent",
+          409
+        );
+      }
     } catch (providerError) {
       if (providerError?.uncertain || providerError?.code === "PROVIDER_TIMEOUT") {
         paymentIntent = await paymentIntentStore.markReconciliationRequired(
@@ -1441,7 +1468,7 @@ router.post("/init", publicPaymentInitLimiter, validateBody(paymentInitSchema), 
       items: paymentContext.items
     });
   } catch (error) {
-    if (error instanceof PaymentIntegrityError) {
+    if (error instanceof PaymentIntegrityError || error instanceof GatewayResolutionError) {
       return res.status(error.httpStatus).json({ success: false, code: error.code, message: error.message });
     }
     if (isMissingTask2ASchema(error)) {
@@ -1477,13 +1504,6 @@ router.post("/verify", validateBody(paymentVerifySchema), async (req, res) => {
   });
 
   try {
-    if (!isPaymentGatewayConfigured()) {
-      return res.status(503).json({
-        success: false,
-        message: "Payment gateway is not enabled yet"
-      });
-    }
-
     const {
       paymentIntentId = "",
       hotelSlug = "",
@@ -1512,7 +1532,27 @@ router.post("/verify", validateBody(paymentVerifySchema), async (req, res) => {
       }
     }
 
-    const adapter = getPaymentGatewayAdapter();
+    const paymentIntent = await paymentIntentStore.findForVerification({
+      intentId: paymentIntentId,
+      hotelSlug,
+      businessOrderId: orderId,
+      providerOrderId: gatewayOrderId
+    });
+    if (!paymentIntent) {
+      throw new PaymentIntegrityError(
+        "PAYMENT_INTENT_NOT_FOUND",
+        "A durable payment intent is required before payment can be finalized.",
+        409
+      );
+    }
+    const gatewayResolution = await resolvePaymentGateway({
+      tenantId: paymentIntent.tenant_id,
+      propertyId: paymentIntent.property_id,
+      provider: paymentIntent.provider,
+      purpose: PURPOSES.VERIFY,
+      paymentIntent
+    });
+    const adapter = gatewayResolution.adapter;
     const isVerified = adapter.verifyCheckoutEvidence({
       gatewayOrderId,
       gatewayPaymentId,
@@ -1529,20 +1569,6 @@ router.post("/verify", validateBody(paymentVerifySchema), async (req, res) => {
         success: false,
         message: "Payment verification failed"
       });
-    }
-
-    const paymentIntent = await paymentIntentStore.findForVerification({
-      intentId: paymentIntentId,
-      hotelSlug,
-      businessOrderId: orderId,
-      providerOrderId: gatewayOrderId
-    });
-    if (!paymentIntent) {
-      throw new PaymentIntegrityError(
-        "PAYMENT_INTENT_NOT_FOUND",
-        "A durable payment intent is required before payment can be finalized.",
-        409
-      );
     }
     const { evidence: providerEvidence, finalization } = await finalizeProviderPayment({
       intent: paymentIntent, paymentId: gatewayPaymentId, adapter,
@@ -1575,7 +1601,7 @@ router.post("/verify", validateBody(paymentVerifySchema), async (req, res) => {
       order: finalizedOrder
     });
   } catch (error) {
-    if (error instanceof PaymentIntegrityError) {
+    if (error instanceof PaymentIntegrityError || error instanceof GatewayResolutionError) {
       logger.warn("Payment finality validation rejected", {
         ...paymentLogMeta, paymentStage: "verify", verifyResult: error.code
       });
@@ -1613,13 +1639,6 @@ router.post("/reconcile", validateBody(paymentReconcileSchema), async (req, res)
   });
 
   try {
-    if (!isPaymentGatewayConfigured()) {
-      return res.status(503).json({
-        success: false,
-        message: "Payment gateway is not enabled yet"
-      });
-    }
-
     const {
       paymentIntentId = "",
       hotelSlug,
@@ -1643,7 +1662,6 @@ router.post("/reconcile", validateBody(paymentReconcileSchema), async (req, res)
       return;
     }
 
-    const adapter = getPaymentGatewayAdapter();
     const paymentIntent = await paymentIntentStore.findForVerification({
       intentId: paymentIntentId, hotelSlug, businessOrderId: orderId, providerOrderId: gatewayOrderId
     });
@@ -1654,6 +1672,14 @@ router.post("/reconcile", validateBody(paymentReconcileSchema), async (req, res)
         409
       );
     }
+    const gatewayResolution = await resolvePaymentGateway({
+      tenantId: paymentIntent.tenant_id,
+      propertyId: paymentIntent.property_id,
+      provider: paymentIntent.provider,
+      purpose: PURPOSES.RECONCILE,
+      paymentIntent
+    });
+    const adapter = gatewayResolution.adapter;
     const providerPayments = await adapter.getOrderPayments(gatewayOrderId);
     const capturedPayment = findCapturedGatewayPayment(providerPayments);
 
@@ -1736,7 +1762,7 @@ router.post("/reconcile", validateBody(paymentReconcileSchema), async (req, res)
       order: null
     });
   } catch (error) {
-    if (error instanceof PaymentIntegrityError) {
+    if (error instanceof PaymentIntegrityError || error instanceof GatewayResolutionError) {
       return res.status(error.httpStatus).json({ success: false, code: error.code, message: error.message });
     }
     if (error?.code === "PROVIDER_TIMEOUT") {

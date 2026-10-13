@@ -8,6 +8,10 @@ const { getPaymentGatewayAdapter, getPaymentGatewayConfig } = require("../utils/
 const { WebhookInboxStore } = require("../payments/webhook-inbox-store");
 const { isMissingTask2ASchema } = require("../payments/payment-intent-store");
 const { processPaymentWebhookInboxOnce } = require("../workers/payment-webhook-worker");
+const {
+  GatewayResolutionError,
+  authenticatePropertyWebhook
+} = require("../payments/payment-gateway-resolver");
 
 const router = express.Router();
 const inbox = new WebhookInboxStore(supabase);
@@ -25,18 +29,38 @@ function parseRawBody(rawBody) {
   return { buffer, payload: JSON.parse(buffer.toString("utf8")) };
 }
 
-router.post("/", async (req, res) => {
+router.post(["/", "/:provider/:webhookRef"], async (req, res) => {
   const correlationId = safeText(req.requestId, 120);
   try {
-    const config = getPaymentGatewayConfig();
-    if (!config.razorpay.webhookSecret) {
-      return res.status(503).json({ success: false, message: "Payment webhook secret is not configured" });
-    }
-    const adapter = getPaymentGatewayAdapter();
     const signature = req.get("x-razorpay-signature") || "";
-    if (!adapter.verifyWebhook({ rawBody: req.body, gatewaySignature: signature })) {
+    let authenticated;
+    if (req.params.webhookRef) {
+      if (String(req.params.provider || "").toLowerCase() !== "razorpay") {
+        return res.status(404).json({ success: false, message: "Webhook endpoint was not found" });
+      }
+      authenticated = await authenticatePropertyWebhook({
+        webhookRef: req.params.webhookRef,
+        rawBody: req.body,
+        signature
+      });
+    } else {
+      const config = getPaymentGatewayConfig();
+      if (!config.razorpay.webhookSecret) {
+        return res.status(503).json({ success: false, message: "Payment webhook secret is not configured" });
+      }
+      const adapter = getPaymentGatewayAdapter();
+      if (adapter.verifyWebhook({ rawBody: req.body, gatewaySignature: signature })) {
+        authenticated = {
+          provider: adapter.provider,
+          merchantRef: adapter.merchantRef,
+          gatewayAccountId: null,
+          webhookSecretRef: null
+        };
+      }
+    }
+    if (!authenticated) {
       logger.warn("Payment webhook signature verification failed", {
-        correlationId, provider: adapter.provider, paymentEvent: "webhook_signature_failure"
+        correlationId, provider: "razorpay", paymentEvent: "webhook_signature_failure"
       });
       return res.status(400).json({ success: false, message: "Invalid webhook signature" });
     }
@@ -59,8 +83,10 @@ router.post("/", async (req, res) => {
     res.set("x-webhook-event-id", eventId);
 
     const result = await inbox.enqueue({
-      provider: adapter.provider,
-      merchantRef: adapter.merchantRef,
+      provider: authenticated.provider,
+      merchantRef: authenticated.merchantRef,
+      gatewayAccountId: authenticated.gatewayAccountId,
+      webhookSecretRef: authenticated.webhookSecretRef,
       providerEventId,
       payloadDigest,
       eventType,
@@ -68,7 +94,7 @@ router.post("/", async (req, res) => {
     });
     const existingStatus = String(result.event?.status || "RECEIVED").toUpperCase();
     logger.info("Payment webhook durably received", {
-      correlationId, provider: adapter.provider, merchantRef: adapter.merchantRef,
+      correlationId, provider: authenticated.provider, merchantRef: authenticated.merchantRef,
       webhookEventId: providerEventId, eventType,
       duplicate: result.duplicate, inboxStatus: existingStatus,
       paymentEvent: result.duplicate ? "duplicate_webhook" : "webhook_received"
@@ -101,6 +127,9 @@ router.post("/", async (req, res) => {
       message: result.duplicate ? "Webhook remains queued for recovery" : "Webhook accepted for processing"
     });
   } catch (error) {
+    if (error instanceof GatewayResolutionError) {
+      return res.status(error.httpStatus).json({ success: false, code: error.code, message: error.message });
+    }
     if (error?.code === "WEBHOOK_EVENT_PAYLOAD_CONFLICT") {
       return res.status(409).json({ success: false, code: error.code, message: "Webhook event payload conflict" });
     }

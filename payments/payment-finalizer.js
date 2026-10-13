@@ -8,6 +8,7 @@ async function finalizeProviderPayment({ intent, paymentId, adapter, store, sour
     ...evidenceContext,
     provider: evidence.provider,
     merchantRef: evidence.merchantRef,
+    credentialRef: evidence.credentialRef,
     providerOrderId: evidence.providerOrderId,
     providerPaymentId: evidence.providerPaymentId,
     amountMinor: evidence.amountMinor,

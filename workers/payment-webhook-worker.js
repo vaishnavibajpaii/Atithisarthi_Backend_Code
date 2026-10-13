@@ -4,11 +4,14 @@ const crypto = require("crypto");
 const { env } = require("../config/env");
 const logger = require("../utils/logger");
 const { supabase } = require("../utils/supabase");
-const { getPaymentGatewayAdapter } = require("../utils/payment-gateway");
 const { finalizeProviderPayment } = require("../payments/payment-finalizer");
 const { PaymentIntentStore } = require("../payments/payment-intent-store");
 const { WebhookInboxStore } = require("../payments/webhook-inbox-store");
 const { notifyPaidOrderAfterFinalization } = require("../payments/paid-order-notification");
+const {
+  PURPOSES,
+  resolvePaymentGateway
+} = require("../payments/payment-gateway-resolver");
 
 let workerTimer = null;
 let workerRunning = false;
@@ -69,13 +72,20 @@ async function processTransferEvent(db, record) {
 async function processInboxRecord({
   record,
   db,
-  adapter,
+  adapter = null,
   intentStore = null,
   notifyPaidOrder = notifyPaidOrderAfterFinalization
 }) {
   const payload = record.payload || {};
   const eventType = String(record.event_type || payload.event || "").toLowerCase();
-  if (eventType.startsWith("transfer.")) return processTransferEvent(db, record);
+  if (eventType.startsWith("transfer.")) {
+    if (record.gateway_account_id) {
+      throw Object.assign(new Error("Per-property transfer events are unsupported"), {
+        code: "BYOG_TRANSFER_EVENT_UNSUPPORTED"
+      });
+    }
+    return processTransferEvent(db, record);
+  }
   if (!["payment.authorized", "payment.captured", "payment.failed", "order.paid"].includes(eventType)) {
     return { paymentIntentId: null, skipped: true };
   }
@@ -85,19 +95,32 @@ async function processInboxRecord({
   const intents = intentStore || new PaymentIntentStore(db);
   const intent = await intents.findForVerification({ providerOrderId: gatewayOrderId });
   if (!intent) throw Object.assign(new Error("Payment intent was not found"), { code: "PAYMENT_INTENT_NOT_FOUND" });
-  if (intent.provider !== adapter.provider || intent.merchant_ref !== adapter.merchantRef) {
+  if (intent.provider !== record.provider || intent.merchant_ref !== record.merchant_ref ||
+      String(intent.gateway_account_id || "") !== String(record.gateway_account_id || "")) {
     throw Object.assign(new Error("Webhook merchant/provider does not match intent"), { code: "MERCHANT_MISMATCH" });
+  }
+  const effectiveAdapter = adapter || (await resolvePaymentGateway({
+    tenantId: intent.tenant_id,
+    propertyId: intent.property_id,
+    provider: intent.provider,
+    purpose: PURPOSES.VERIFY,
+    paymentIntent: intent
+  })).adapter;
+  if (intent.provider !== effectiveAdapter.provider ||
+      intent.merchant_ref !== effectiveAdapter.merchantRef ||
+      intent.credential_ref !== effectiveAdapter.credentialRef) {
+    throw Object.assign(new Error("Webhook credential does not match intent"), { code: "CREDENTIAL_MISMATCH" });
   }
 
   let paymentId = String(paymentEntity(payload).id || "");
   if (!paymentId && eventType === "order.paid") {
-    const payments = await adapter.getOrderPayments(gatewayOrderId);
+    const payments = await effectiveAdapter.getOrderPayments(gatewayOrderId);
     paymentId = String(payments.find((item) => item?.captured === true || String(item?.status).toLowerCase() === "captured")?.id || "");
   }
   if (!paymentId) throw Object.assign(new Error("Provider payment id is missing"), { code: "PROVIDER_PAYMENT_MISSING" });
   if (eventType === "payment.captured" || eventType === "order.paid") {
     const { finalization } = await finalizeProviderPayment({
-      intent, paymentId, adapter, store: intents, source: "WEBHOOK",
+      intent, paymentId, adapter: effectiveAdapter, store: intents, source: "WEBHOOK",
       evidenceContext: { providerEventId: record.provider_event_id }
     });
     if (finalization?.orderUpdated) {
@@ -106,7 +129,7 @@ async function processInboxRecord({
     return { paymentIntentId: intent.id };
   }
 
-  const evidence = await adapter.getPaymentStatus(paymentId);
+  const evidence = await effectiveAdapter.getPaymentStatus(paymentId);
   if (evidence.providerOrderId !== intent.provider_order_id || evidence.merchantRef !== intent.merchant_ref) {
     throw Object.assign(new Error("Provider evidence binding failed"), { code: "PROVIDER_BINDING_MISMATCH" });
   }
@@ -114,7 +137,7 @@ async function processInboxRecord({
   return { paymentIntentId: intent.id };
 }
 
-async function processPaymentWebhookInboxOnce({ db = supabase, adapter = getPaymentGatewayAdapter(), leaseOwner } = {}) {
+async function processPaymentWebhookInboxOnce({ db = supabase, adapter = null, leaseOwner } = {}) {
   const owner = leaseOwner || `payment-worker-${process.pid}-${crypto.randomUUID()}`;
   const inbox = new WebhookInboxStore(db);
   const record = await inbox.claim(owner, 60, 12);
