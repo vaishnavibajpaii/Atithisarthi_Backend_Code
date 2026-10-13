@@ -14,6 +14,9 @@ const {
 } = require("../payments/payment-gateway-resolver");
 const { validateCapturedEvidence } = require("../payments/payment-domain");
 const { getEffectivePermissions } = require("../utils/permissions");
+const {
+  classifyGatewayAdminError
+} = require("../payments/payment-gateway-admin-errors");
 
 const TENANT_A = "11111111-1111-4111-8111-111111111111";
 const TENANT_B = "22222222-2222-4222-8222-222222222222";
@@ -191,6 +194,30 @@ test("resolved secrets do not serialize into API JSON or errors", async () => {
   assert.equal(JSON.stringify(result).includes(secret), false);
   const error = new GatewayResolutionError("SAFE_CODE", "Safe message");
   assert.equal(JSON.stringify(error).includes(secret), false);
+});
+
+test("gateway admin diagnostics expose only allowlisted markers and safe SQLSTATE categories", () => {
+  const secret = "unique-admin-secret-that-must-never-escape";
+  assert.deepEqual(
+    classifyGatewayAdminError({ code: "23514", message: `constraint rejected ${secret}` }),
+    {
+      code: "TASK5_DATABASE_CONSTRAINT_REJECTED",
+      status: 409,
+      message: "Database gateway safeguards rejected the operation"
+    }
+  );
+  assert.deepEqual(
+    classifyGatewayAdminError({ code: "23514", message: "TASK5_GATEWAY_ACCOUNT_NOT_READY" }),
+    {
+      code: "TASK5_GATEWAY_ACCOUNT_NOT_READY",
+      status: 409,
+      message: "Payment gateway operation could not be completed"
+    }
+  );
+  assert.equal(
+    JSON.stringify(classifyGatewayAdminError({ code: "XX000", message: secret })).includes(secret),
+    false
+  );
 });
 
 test("hotel-facing route is write-only for secrets and ignores client credential selection", () => {

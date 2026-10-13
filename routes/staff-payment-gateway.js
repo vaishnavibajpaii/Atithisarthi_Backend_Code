@@ -16,6 +16,9 @@ const {
   createRazorpayCredentialAdapter,
   getPaymentGatewayConfig
 } = require("../utils/payment-gateway");
+const {
+  classifyGatewayAdminError
+} = require("../payments/payment-gateway-admin-errors");
 
 const router = express.Router();
 router.use(requireStaffAuth);
@@ -92,29 +95,11 @@ async function readInternalStatus(scope) {
 }
 
 function handleAdminError(res, error) {
-  const allowed = new Set([
-    "GATEWAY_MODE_MISMATCH",
-    "LIVE_GATEWAY_REFUSED",
-    "GATEWAY_ROTATION_CONTINUITY_UNAVAILABLE",
-    "GATEWAY_ROTATION_CONTINUITY_FAILED",
-    "TASK5_GATEWAY_CREDENTIAL_CHANGED",
-    "TASK5_ROTATION_CONTINUITY_REQUIRED",
-    "TASK5_PROPERTY_GATEWAY_NOT_FOUND",
-    "TASK5_PER_PROPERTY_GATEWAY_NOT_READY",
-    "PER_HOTEL_GATEWAY_FEATURE_DISABLED",
-    "PROVIDER_LOOKUP_FAILED",
-    "PROVIDER_TIMEOUT"
-  ]);
-  const code = allowed.has(String(error?.code || ""))
-    ? String(error.code)
-    : "GATEWAY_OPERATION_FAILED";
-  const status = Number(error?.httpStatus) || (code === "PROVIDER_LOOKUP_FAILED" ? 400 : 409);
+  const { code, status, message } = classifyGatewayAdminError(error);
   return res.status(status).json({
     success: false,
     code,
-    message: code === "PROVIDER_LOOKUP_FAILED"
-      ? "Razorpay rejected the submitted TEST credential"
-      : "Payment gateway operation could not be completed"
+    message
   });
 }
 
