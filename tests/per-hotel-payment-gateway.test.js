@@ -243,6 +243,21 @@ test("credential staging cannot silently cut over payment routing", () => {
   assert.match(migration, /revoke all on function public\.task5_configure_property_gateway\(/);
 });
 
+test("restricted gateway owner alone can execute configuration trigger guards", () => {
+  const fs = require("node:fs");
+  const migration = fs.readFileSync(
+    path.join(__dirname, "../scripts/task5-gateway-trigger-execute-fix.sql"),
+    "utf8"
+  );
+  assert.match(migration, /to app_payment_gateway_secret_owner/);
+  assert.match(
+    migration,
+    /from public, anon, authenticated, app_tenant_runtime, app_tenant_rpc_owner, service_role/
+  );
+  assert.match(migration, /task5_assert_active_account_ready/);
+  assert.doesNotMatch(migration, /grant execute[\s\S]*to app_tenant_runtime/i);
+});
+
 test("hotel owner UI keeps credentials write-only and cutover explicit", () => {
   const fs = require("node:fs");
   const html = fs.readFileSync(path.join(__dirname, "../../frontend/staff-orders.html"), "utf8");

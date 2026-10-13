@@ -1133,6 +1133,17 @@ revoke all on function public.task5_forbid_audit_mutation() from public, anon, a
 revoke all on function public.task5_assert_active_account_ready() from public, anon, authenticated;
 revoke all on function public.task5_inherit_payment_attempt_credential() from public, anon, authenticated;
 
+-- PostgreSQL checks trigger-function EXECUTE for the role performing gateway
+-- writes. Keep the trigger surface closed to application roles while allowing
+-- only the isolated NOLOGIN gateway function owner to invoke the guards.
+grant execute on function
+  public.task5_guard_gateway_policy(),
+  public.task5_guard_gateway_account(),
+  public.task5_guard_gateway_credential(),
+  public.task5_guard_gateway_webhook_secret(),
+  public.task5_assert_active_account_ready()
+to app_payment_gateway_secret_owner;
+
 comment on table public.property_payment_gateway_policies is
   'Task 5 server-controlled explicit legacy-global versus per-property gateway selection.';
 comment on table public.payment_gateway_accounts is
