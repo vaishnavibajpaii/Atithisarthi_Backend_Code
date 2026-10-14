@@ -657,7 +657,9 @@ function getPaymentGatewayReadiness() {
     perHotelGateway: {
       enabled: !!env.perHotelPaymentGatewayEnabled,
       policyControlled: true,
-      failClosed: true
+      failClosed: true,
+      explicitPolicyRequired:
+        !!env.perHotelPaymentGatewayRequireExplicitPolicy
     },
     reason,
     hardening: {

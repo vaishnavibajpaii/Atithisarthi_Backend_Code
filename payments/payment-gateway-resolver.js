@@ -63,7 +63,7 @@ class PostgresGatewayRepository {
     });
     if (error) throw error;
     const row = Array.isArray(data) ? data[0] : data;
-    return row || { resolution_mode: "LEGACY_GLOBAL", mode: null };
+    return row || null;
   }
 
   async resolveActiveCredential(scope, provider) {
@@ -150,6 +150,13 @@ async function resolvePaymentGateway({
 
   if (normalizedPurpose === PURPOSES.NEW_PAYMENT) {
     const policy = await repository.getPropertyPolicy(scope, normalizedProvider);
+    if (!policy && env.perHotelPaymentGatewayRequireExplicitPolicy) {
+      throw new GatewayResolutionError(
+        "PROPERTY_GATEWAY_POLICY_REQUIRED",
+        "Online payment is not configured for this property",
+        409
+      );
+    }
     const resolutionMode = String(policy?.resolution_mode || "LEGACY_GLOBAL").toUpperCase();
     if (resolutionMode === "LEGACY_GLOBAL") {
       if (!isPaymentGatewayConfigured()) {

@@ -118,6 +118,13 @@ function getReadinessChecks() {
   const perHotelPaymentGatewayReady =
     !env.perHotelPaymentGatewayEnabled ||
     (env.tenantRuntimeEnabled && hasText(env.tenantDatabaseUrl));
+  const perHotelExplicitPolicyReady =
+    !env.perHotelPaymentGatewayRequireExplicitPolicy ||
+    (
+      env.perHotelPaymentGatewayEnabled &&
+      env.tenantRuntimeEnabled &&
+      hasText(env.tenantDatabaseUrl)
+    );
   const tenantPublicHotelReady =
     !env.tenantRuntimePublicHotelEnabled ||
     (env.tenantRuntimeEnabled && hasText(env.tenantDatabaseUrl));
@@ -220,6 +227,12 @@ function getReadinessChecks() {
       perHotelPaymentGatewayReady,
       "per_hotel_gateway_requires_tenant_runtime",
       env.perHotelPaymentGatewayEnabled
+    ),
+    buildReadinessCheck(
+      "per_hotel_payment_gateway_explicit_policy",
+      perHotelExplicitPolicyReady,
+      "explicit_gateway_policy_requires_per_hotel_runtime",
+      env.perHotelPaymentGatewayRequireExplicitPolicy
     ),
     buildReadinessCheck(
       "email_notifications",

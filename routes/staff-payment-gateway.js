@@ -82,6 +82,9 @@ function safeStatus(row = {}) {
     secretConfigured: row.secret_configured === true,
     webhookConfigured: row.webhook_configured === true,
     perHotelFeatureEnabled: env.perHotelPaymentGatewayEnabled === true,
+    explicitPolicyRequired:
+      env.perHotelPaymentGatewayRequireExplicitPolicy === true,
+    liveConfigurationAllowed: env.isProduction === true,
     webhookPath: row.webhook_ref
       ? `/api/payments/webhook/razorpay/${row.webhook_ref}`
       : null

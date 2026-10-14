@@ -63,7 +63,11 @@ class Repository {
     this.policy = policy;
     this.candidates = candidates;
   }
-  async getPropertyPolicy() { return { resolution_mode: this.policy, mode: "TEST" }; }
+  async getPropertyPolicy() {
+    return this.policy
+      ? { resolution_mode: this.policy, mode: "TEST" }
+      : null;
+  }
   async resolveActiveCredential() { return this.active; }
   async resolveBoundCredential() { return this.bound; }
   async resolveWebhookCandidates() { return this.candidates; }
@@ -73,7 +77,10 @@ async function expectCode(promise, code) {
   await assert.rejects(promise, (error) => error?.code === code);
 }
 
-test.before(() => { env.perHotelPaymentGatewayEnabled = true; });
+test.before(() => {
+  env.perHotelPaymentGatewayEnabled = true;
+  env.perHotelPaymentGatewayRequireExplicitPolicy = false;
+});
 
 test("correct hotel credential is selected for a new PaymentIntent", async () => {
   const result = await resolvePaymentGateway({
@@ -213,6 +220,32 @@ test("PER_PROPERTY policy never falls back to global when feature flag is off", 
   } finally {
     env.perHotelPaymentGatewayEnabled = true;
   }
+});
+
+test("an unconfigured property fails closed when explicit-policy mode is enabled", async () => {
+  env.perHotelPaymentGatewayRequireExplicitPolicy = true;
+  try {
+    await expectCode(resolvePaymentGateway({
+      tenantId: TENANT_B,
+      propertyId: 202,
+      provider: "razorpay",
+      purpose: PURPOSES.NEW_PAYMENT,
+      repository: new Repository({ policy: null })
+    }), "PROPERTY_GATEWAY_POLICY_REQUIRED");
+  } finally {
+    env.perHotelPaymentGatewayRequireExplicitPolicy = false;
+  }
+});
+
+test("explicit-policy production flag is visible without exposing credentials", () => {
+  const fs = require("node:fs");
+  const envSource = fs.readFileSync(path.join(__dirname, "../config/env.js"), "utf8");
+  const resolver = fs.readFileSync(path.join(__dirname, "../payments/payment-gateway-resolver.js"), "utf8");
+  const statusRoute = fs.readFileSync(path.join(__dirname, "../routes/staff-payment-gateway.js"), "utf8");
+  assert.match(envSource, /PER_HOTEL_PAYMENT_GATEWAY_REQUIRE_EXPLICIT_POLICY/);
+  assert.match(resolver, /PROPERTY_GATEWAY_POLICY_REQUIRED/);
+  assert.match(statusRoute, /explicitPolicyRequired/);
+  assert.doesNotMatch(statusRoute, /keySecret\s*:/);
 });
 
 test("wrong tenant and wrong property bindings are denied", async () => {

@@ -103,6 +103,8 @@ port: Number(getEnv("PORT", "10000")),
     getEnv("PAYMENT_GATEWAY_ENABLED", "false") === "true",
   perHotelPaymentGatewayEnabled:
     getEnv("PER_HOTEL_PAYMENT_GATEWAY_ENABLED", "false") === "true",
+  perHotelPaymentGatewayRequireExplicitPolicy:
+    getEnv("PER_HOTEL_PAYMENT_GATEWAY_REQUIRE_EXPLICIT_POLICY", "false") === "true",
   roomCombinedCheckoutEnabled:
     getEnv("ROOM_COMBINED_CHECKOUT_ENABLED", "false") === "true",
   paymentGatewayProvider: getEnv("PAYMENT_GATEWAY_PROVIDER", "razorpay"),
