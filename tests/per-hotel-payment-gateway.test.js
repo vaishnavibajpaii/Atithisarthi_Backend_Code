@@ -13,6 +13,7 @@ const {
   resolvePaymentGateway
 } = require("../payments/payment-gateway-resolver");
 const { validateCapturedEvidence } = require("../payments/payment-domain");
+const { PaymentIntentStore } = require("../payments/payment-intent-store");
 const { getEffectivePermissions } = require("../utils/permissions");
 const {
   classifyGatewayAdminError
@@ -82,6 +83,117 @@ test("correct hotel credential is selected for a new PaymentIntent", async () =>
   assert.equal(result.gatewayAccountId, ACCOUNT_A);
   assert.equal(result.adapter.merchantRef, MERCHANT_A);
   assert.equal(result.adapter.credentialRef, CRED_A1);
+});
+
+test("BYOG PaymentIntent creation uses canonical transaction-local tenant context", async () => {
+  const createdIntent = {
+    ...intent(),
+    id: "33333333-3333-4333-8333-333333333333",
+    hotel_slug: "hotel-a",
+    operation: "FOOD_ORDER_PAYMENT",
+    idempotency_key: "idem-hotel-a",
+    request_digest: "digest-hotel-a"
+  };
+  let observedScope = null;
+  let observedSql = "";
+  const store = new PaymentIntentStore(
+    { from() { throw new Error("BYOG must not use the service-role insert path"); } },
+    {
+      tenantTransactionRunner: async (scope, work) => {
+        observedScope = scope;
+        return work({
+          async query(sql, values) {
+            observedSql = sql;
+            assert.equal(values[0], TENANT_A);
+            assert.equal(values[1], "101");
+            return { rows: [{ payload: createdIntent }] };
+          }
+        }, { tenantId: TENANT_A, propertyId: "101" });
+      }
+    }
+  );
+
+  const result = await store.createOrReuse({
+    tenantId: TENANT_A,
+    propertyId: 101,
+    hotelSlug: "hotel-a",
+    operation: "FOOD_ORDER_PAYMENT",
+    provider: "razorpay",
+    merchantRef: MERCHANT_A,
+    credentialRef: CRED_A1,
+    gatewayAccountId: ACCOUNT_A,
+    expectedAmountMinor: 12000,
+    currency: "INR",
+    idempotencyKey: "idem-hotel-a",
+    requestDigest: "digest-hotel-a",
+    context: { safe: true }
+  });
+
+  assert.deepEqual(observedScope, { tenantId: TENANT_A, propertyId: 101 });
+  assert.match(observedSql, /INSERT INTO public\.payment_intents/);
+  assert.match(observedSql, /ON CONFLICT \(hotel_slug, operation, idempotency_key\) DO NOTHING/);
+  assert.equal(result.reused, false);
+  assert.equal(result.intent.gateway_account_id, ACCOUNT_A);
+});
+
+test("BYOG PaymentIntent idempotency is resolved inside the same tenant transaction", async () => {
+  const existingIntent = {
+    ...intent(),
+    hotel_slug: "hotel-a",
+    operation: "FOOD_ORDER_PAYMENT",
+    idempotency_key: "idem-retry",
+    request_digest: "same-digest"
+  };
+  let queryCount = 0;
+  const store = new PaymentIntentStore({}, {
+    tenantTransactionRunner: async (_scope, work) => work({
+      async query() {
+        queryCount += 1;
+        return queryCount === 1
+          ? { rows: [] }
+          : { rows: [{ payload: existingIntent }] };
+      }
+    }, { tenantId: TENANT_A, propertyId: "101" })
+  });
+
+  const result = await store.createOrReuse({
+    tenantId: TENANT_A,
+    propertyId: 101,
+    hotelSlug: "hotel-a",
+    operation: "FOOD_ORDER_PAYMENT",
+    provider: "razorpay",
+    merchantRef: MERCHANT_A,
+    credentialRef: CRED_A1,
+    gatewayAccountId: ACCOUNT_A,
+    expectedAmountMinor: 12000,
+    currency: "INR",
+    idempotencyKey: "idem-retry",
+    requestDigest: "same-digest"
+  });
+
+  assert.equal(queryCount, 2);
+  assert.equal(result.reused, true);
+  assert.equal(result.intent.request_digest, "same-digest");
+});
+
+test("BYOG PaymentIntent creation fails closed without canonical scope", async () => {
+  const store = new PaymentIntentStore({}, {
+    tenantTransactionRunner: async () => {
+      throw new Error("transaction runner must not be called");
+    }
+  });
+  await expectCode(store.createOrReuse({
+    hotelSlug: "hotel-a",
+    operation: "FOOD_ORDER_PAYMENT",
+    provider: "razorpay",
+    merchantRef: MERCHANT_A,
+    credentialRef: CRED_A1,
+    gatewayAccountId: ACCOUNT_A,
+    expectedAmountMinor: 12000,
+    currency: "INR",
+    idempotencyKey: "idem-missing-scope",
+    requestDigest: "digest-missing-scope"
+  }), "PAYMENT_INTENT_SCOPE_REQUIRED");
 });
 
 test("missing or inactive credential fails closed for a new payment", async () => {

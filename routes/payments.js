@@ -1315,6 +1315,7 @@ router.post("/init", publicPaymentInitLimiter, validateBody(paymentInitSchema), 
       orderContext: safeOrderContext, orderDraft
     });
     const intentResult = await paymentIntentStore.createOrReuse({
+      tenantId: tenantScope.tenantId, propertyId: tenantScope.propertyId,
       hotelSlug, operation: PAYMENT_OPERATION, provider: adapter.provider,
       merchantRef: adapter.merchantRef, credentialRef: adapter.credentialRef,
       gatewayAccountId: gatewayResolution.gatewayAccountId,

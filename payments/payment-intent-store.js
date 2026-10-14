@@ -1,6 +1,7 @@
 "use strict";
 
 const { PaymentIntegrityError } = require("./payment-domain");
+const { withTenantTransaction } = require("../utils/tenant-database");
 
 function isMissingTask2ASchema(error) {
   const text = `${error?.code || ""} ${error?.message || ""} ${error?.details || ""}`.toLowerCase();
@@ -8,7 +9,11 @@ function isMissingTask2ASchema(error) {
 }
 
 class PaymentIntentStore {
-  constructor(supabaseClient) { this.db = supabaseClient; }
+  constructor(supabaseClient, options = {}) {
+    this.db = supabaseClient;
+    this.tenantTransactionRunner =
+      options.tenantTransactionRunner || withTenantTransaction;
+  }
 
   async findByIdempotency(hotelSlug, operation, idempotencyKey) {
     const { data, error } = await this.db.from("payment_intents").select("*")
@@ -28,6 +33,18 @@ class PaymentIntentStore {
       idempotency_key: input.idempotencyKey, request_digest: input.requestDigest,
       context: input.context || {}
     };
+
+    if (row.gateway_account_id) {
+      if (!input.tenantId || !input.propertyId) {
+        throw new PaymentIntegrityError(
+          "PAYMENT_INTENT_SCOPE_REQUIRED",
+          "Canonical tenant and property context is required for a property gateway PaymentIntent",
+          409
+        );
+      }
+      return this.createOrReuseTenantScoped(input, row);
+    }
+
     const inserted = await this.db.from("payment_intents").insert([row]).select("*").single();
     if (!inserted.error) return { intent: inserted.data, reused: false };
     if (String(inserted.error.code) !== "23505") throw inserted.error;
@@ -37,6 +54,89 @@ class PaymentIntentStore {
       throw new PaymentIntegrityError("IDEMPOTENCY_KEY_REUSED", "Idempotency-Key was already used for a different payment request", 409);
     }
     return { intent: existing, reused: true };
+  }
+
+  async createOrReuseTenantScoped(input, row) {
+    return this.tenantTransactionRunner(
+      {
+        tenantId: input.tenantId,
+        propertyId: input.propertyId
+      },
+      async (client, scope) => {
+        const values = [
+          scope.tenantId,
+          scope.propertyId,
+          row.hotel_slug,
+          row.operation,
+          row.business_order_id,
+          row.provider,
+          row.merchant_ref,
+          row.credential_ref,
+          row.gateway_account_id,
+          row.expected_amount_minor,
+          row.currency,
+          row.idempotency_key,
+          row.request_digest,
+          JSON.stringify(row.context)
+        ];
+        const inserted = await client.query(
+          `WITH inserted AS (
+             INSERT INTO public.payment_intents (
+               tenant_id, property_id, hotel_slug, operation,
+               business_order_id, provider, merchant_ref, credential_ref,
+               gateway_account_id, expected_amount_minor, currency,
+               idempotency_key, request_digest, context
+             ) VALUES (
+               $1::uuid, $2::bigint, $3, $4,
+               $5, $6, $7, $8,
+               $9::uuid, $10::bigint, $11,
+               $12, $13, $14::jsonb
+             )
+             ON CONFLICT (hotel_slug, operation, idempotency_key) DO NOTHING
+             RETURNING *
+           )
+           SELECT to_jsonb(inserted) AS payload FROM inserted`,
+          values
+        );
+        if (inserted.rows.length === 1) {
+          return { intent: inserted.rows[0].payload, reused: false };
+        }
+
+        const existing = await client.query(
+          `SELECT to_jsonb(intent) AS payload
+             FROM public.payment_intents AS intent
+            WHERE intent.tenant_id = $1::uuid
+              AND intent.property_id = $2::bigint
+              AND intent.hotel_slug = $3
+              AND intent.operation = $4
+              AND intent.idempotency_key = $5
+            LIMIT 2`,
+          [
+            scope.tenantId,
+            scope.propertyId,
+            row.hotel_slug,
+            row.operation,
+            row.idempotency_key
+          ]
+        );
+        if (existing.rows.length !== 1) {
+          throw new PaymentIntegrityError(
+            "PAYMENT_INTENT_IDEMPOTENCY_CONFLICT",
+            "The existing payment request could not be resolved safely",
+            409
+          );
+        }
+        const intent = existing.rows[0].payload;
+        if (intent.request_digest !== row.request_digest) {
+          throw new PaymentIntegrityError(
+            "IDEMPOTENCY_KEY_REUSED",
+            "Idempotency-Key was already used for a different payment request",
+            409
+          );
+        }
+        return { intent, reused: true };
+      }
+    );
   }
 
   async claimProviderCreation(id) {
