@@ -1,5 +1,53 @@
 "use strict";
 
+const crypto = require("crypto");
+
+function stableJson(value) {
+  if (Array.isArray(value)) return value.map(stableJson);
+  if (!value || typeof value !== "object") return value;
+  return Object.keys(value).sort().reduce((result, key) => {
+    result[key] = stableJson(value[key]);
+    return result;
+  }, {});
+}
+
+function canonicalRoomBookingRequest({ booking = {}, payments = [] } = {}) {
+  const {
+    created_at,
+    updated_at,
+    idempotency_key,
+    request_fingerprint,
+    ...durableBookingRequest
+  } = booking || {};
+
+  return {
+    booking: durableBookingRequest,
+    payments: Array.isArray(payments) ? payments : []
+  };
+}
+
+function buildRoomBookingRequestFingerprint(value = {}) {
+  return crypto
+    .createHash("sha256")
+    .update(JSON.stringify(stableJson(canonicalRoomBookingRequest(value))))
+    .digest("hex");
+}
+
+function classifyRoomBookingReplay(existingBooking, requestFingerprint) {
+  if (!existingBooking) return { replay: false, conflict: false };
+
+  const storedFingerprint = String(existingBooking.request_fingerprint || "").trim().toLowerCase();
+  const submittedFingerprint = String(requestFingerprint || "").trim().toLowerCase();
+  const matches = /^[a-f0-9]{64}$/.test(storedFingerprint) &&
+    storedFingerprint === submittedFingerprint;
+
+  return {
+    replay: matches,
+    conflict: !matches,
+    legacy: !storedFingerprint
+  };
+}
+
 function getRoomIdempotencyKey(req = {}) {
   const raw = String(req.get?.("Idempotency-Key") || req.headers?.["idempotency-key"] || "").trim();
   if (!raw) return { key: null, error: null };
@@ -28,4 +76,38 @@ function isRoomIdempotencyConflict(error) {
   return code === "23505" && (details.includes("room_bookings_scope_idempotency_unique") || details.includes("idempotency_key"));
 }
 
-module.exports = { findRoomBookingByIdempotency, getRoomIdempotencyKey, isRoomIdempotencyConflict };
+function isMissingTask6BookingAtomicRpc(error) {
+  const code = String(error?.code || "").trim().toUpperCase();
+  const details = `${error?.message || ""} ${error?.details || ""} ${error?.hint || ""}`
+    .trim()
+    .toLowerCase();
+  return ["42883", "PGRST202"].includes(code) ||
+    details.includes("task6_create_room_booking_atomic");
+}
+
+function isTask6BookingIdempotencyConflict(error) {
+  const details = `${error?.message || ""} ${error?.details || ""} ${error?.hint || ""}`
+    .trim()
+    .toUpperCase();
+  return details.includes("TASK6_BOOKING_IDEMPOTENCY_CONFLICT");
+}
+
+function isTask6BookingMaintenanceConflict(error) {
+  const details = `${error?.message || ""} ${error?.details || ""} ${error?.hint || ""}`
+    .trim()
+    .toUpperCase();
+  return details.includes("TASK6_BOOKING_MAINTENANCE_CONFLICT");
+}
+
+module.exports = {
+  buildRoomBookingRequestFingerprint,
+  canonicalRoomBookingRequest,
+  classifyRoomBookingReplay,
+  findRoomBookingByIdempotency,
+  getRoomIdempotencyKey,
+  isMissingTask6BookingAtomicRpc,
+  isRoomIdempotencyConflict,
+  isTask6BookingIdempotencyConflict,
+  isTask6BookingMaintenanceConflict,
+  stableJson
+};

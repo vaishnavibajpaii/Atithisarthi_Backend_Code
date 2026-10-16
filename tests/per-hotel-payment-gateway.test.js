@@ -290,6 +290,19 @@ test("rotation selects V2 for new payment while a V1 intent resolves V1", async 
   assert.equal(historical.adapter.credentialRef, CRED_A1);
 });
 
+test("rotation SQL qualifies lifecycle status columns against output parameters", () => {
+  const fs = require("node:fs");
+  const sources = [
+    fs.readFileSync(path.join(__dirname, "../scripts/task5-gateway-runtime-rpcs.sql"), "utf8"),
+    fs.readFileSync(path.join(__dirname, "../scripts/task5-rotation-status-ambiguity-fix.sql"), "utf8")
+  ];
+  for (const source of sources) {
+    assert.match(source, /update public\.payment_gateway_credentials as c[\s\S]*c\.status = 'ACTIVE'/);
+    assert.match(source, /update public\.payment_gateway_webhook_secrets as w[\s\S]*w\.status = 'ACTIVE'/);
+    assert.doesNotMatch(source, /where account_id = v_account\.id and status = 'ACTIVE'/);
+  }
+});
+
 test("retired historical credential blocks reconciliation without marking failure", async () => {
   await expectCode(resolvePaymentGateway({
     tenantId: TENANT_A, propertyId: 101, provider: "razorpay",

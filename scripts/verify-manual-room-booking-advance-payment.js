@@ -178,7 +178,8 @@ function verifyImplementationContracts() {
   for (const [source, label] of [[adminRoute, "admin"], [staffRoute, "staff"]]) {
     requireText(source, "buildRoomAdvancePlan", `${label} backend validation`);
     requireText(source, "create_room_booking_with_advance", `${label} atomic creation`);
-    requireText(source, "hashRoomAdvanceRequest", `${label} retry fingerprint`);
+    requireText(source, "buildRoomBookingRequestFingerprint", `${label} canonical retry fingerprint`);
+    requireText(source, "request_fingerprint", `${label} durable retry fingerprint`);
     requireText(source, "buildRoomAdvanceReceipt", `${label} advance receipt`);
     requireText(source, '"/bookings/:id/payments"', `${label} payment history`);
     requireText(source, "ROOM_ADVANCE_METHOD_DISABLED", `${label} disabled-method rejection`);

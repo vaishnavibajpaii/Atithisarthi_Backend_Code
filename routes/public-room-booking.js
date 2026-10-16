@@ -45,9 +45,13 @@ const {
   resolveRoomBookingPricing
 } = require("../utils/room-pricing");
 const {
+  buildRoomBookingRequestFingerprint,
+  classifyRoomBookingReplay,
   findRoomBookingByIdempotency,
   getRoomIdempotencyKey,
-  isRoomIdempotencyConflict
+  isMissingTask6BookingAtomicRpc,
+  isTask6BookingIdempotencyConflict,
+  isTask6BookingMaintenanceConflict
 } = require("../utils/room-idempotency");
 const {
   ROOM_BOOKING_CONFLICT_CODE,
@@ -831,8 +835,9 @@ router.post(
       if (!hotelAccess) {
         return;
       }
+      const canonicalSlug = hotelAccess.slug;
 
-      if (!(await ensurePublicRoomBookingEnabled(res, slug))) {
+      if (!(await ensurePublicRoomBookingEnabled(res, canonicalSlug))) {
         return;
       }
 
@@ -840,13 +845,39 @@ router.post(
       if (idempotency.error) {
         return res.status(400).json({ success: false, message: idempotency.error });
       }
-      if (idempotency.key) {
-        const existingBooking = await findRoomBookingByIdempotency({
-          supabaseClient: supabase,
-          hotelSlug: slug,
-          key: idempotency.key
+      if (!idempotency.key) {
+        return res.status(400).json({
+          success: false,
+          code: "ROOM_BOOKING_IDEMPOTENCY_REQUIRED",
+          message: "An Idempotency-Key header is required for room booking requests."
         });
-        if (existingBooking) {
+      }
+      const requestFingerprint = buildRoomBookingRequestFingerprint({
+        booking: {
+          operation: "public_room_booking_create",
+          hotel_slug: canonicalSlug,
+          room_id: roomId,
+          guest_name: guestName,
+          guest_phone: guestPhone,
+          guest_email: guestEmail || null,
+          guest_company_name: guestCompanyName || "",
+          guest_gstin: guestGstin || "",
+          guest_place_of_supply: guestPlaceOfSupply || "",
+          check_in_date: checkInDate,
+          check_out_date: checkOutDate,
+          adults: Number(adults || 0),
+          children: Number(children || 0),
+          notes: notes || ""
+        }
+      });
+      const existingBooking = await findRoomBookingByIdempotency({
+        supabaseClient: supabase,
+        hotelSlug: canonicalSlug,
+        key: idempotency.key
+      });
+      if (existingBooking) {
+        const replay = classifyRoomBookingReplay(existingBooking, requestFingerprint);
+        if (replay.replay) {
           return res.json({
             success: true,
             idempotent: true,
@@ -854,10 +885,15 @@ router.post(
             booking: mapPublicBooking(existingBooking)
           });
         }
+        return res.status(409).json({
+          success: false,
+          code: "ROOM_BOOKING_IDEMPOTENCY_CONFLICT",
+          message: "This booking retry key was already used for a different request."
+        });
       }
 
       const roomResult = await fetchPublicBookableRoom({
-        hotelSlug: slug,
+        hotelSlug: canonicalSlug,
         roomId
       });
 
@@ -885,13 +921,34 @@ router.post(
       }
 
       const hasConflict = await hasBlockingBooking({
-        hotelSlug: slug,
+        hotelSlug: canonicalSlug,
         roomId,
         checkInDate,
         checkOutDate
       });
 
       if (hasConflict) {
+        const concurrentReplay = await findRoomBookingByIdempotency({
+          supabaseClient: supabase,
+          hotelSlug: canonicalSlug,
+          key: idempotency.key
+        });
+        const replay = classifyRoomBookingReplay(concurrentReplay, requestFingerprint);
+        if (replay.replay) {
+          return res.json({
+            success: true,
+            idempotent: true,
+            message: "Room booking request already submitted",
+            booking: mapPublicBooking(concurrentReplay)
+          });
+        }
+        if (replay.conflict) {
+          return res.status(409).json({
+            success: false,
+            code: "ROOM_BOOKING_IDEMPOTENCY_CONFLICT",
+            message: "This booking retry key was already used for a different request."
+          });
+        }
         return res.status(409).json({
           success: false,
           code: ROOM_BOOKING_CONFLICT_CODE,
@@ -901,7 +958,7 @@ router.post(
 
       const maintenanceBlocked = await fetchMaintenanceBlockedRoomIds({
         supabaseClient: supabase,
-        hotelSlug: slug,
+        hotelSlug: canonicalSlug,
         roomIds: [roomId],
         checkInDate,
         checkOutDate
@@ -916,7 +973,7 @@ router.post(
 
       const totals = await resolveRoomBookingPricing({
         supabaseClient: supabase,
-        hotelSlug: slug,
+        hotelSlug: canonicalSlug,
         room,
         checkInDate,
         checkOutDate,
@@ -936,7 +993,7 @@ router.post(
       const scope = env.tenantRuntimeWritesEnabled ? getTenantRequestScope(req) : null;
       const bookingPayload = {
         ...(scope ? { tenant_id: scope.tenantId, property_id: scope.propertyId } : {}),
-        hotel_slug: scope?.propertySlug || slug,
+        hotel_slug: scope?.propertySlug || canonicalSlug,
         room_id: roomId,
         guest_name: guestName,
         guest_phone: guestPhone,
@@ -957,12 +1014,12 @@ router.post(
         booking_source: "online",
         created_by_role: "public",
         notes: notes || "",
+        idempotency_key: idempotency.key,
         updated_at: new Date().toISOString()
       };
       if (totals.supportsSnapshot) {
         bookingPayload.rate_plan_id = totals.ratePlanId;
         bookingPayload.pricing_snapshot = totals.pricingSnapshot;
-        bookingPayload.idempotency_key = idempotency.key;
         if (totals.taxSnapshot?.supportsTaxSnapshot) {
           bookingPayload.tax_rule_id = totals.taxRuleId;
           bookingPayload.tax_snapshot = totals.taxSnapshot;
@@ -972,23 +1029,38 @@ router.post(
           bookingPayload.guest_place_of_supply = guestPlaceOfSupply || "";
         }
       }
+      bookingPayload.request_fingerprint = requestFingerprint;
 
-      const { data, error } = await database
-        .from("room_bookings")
-        .insert([bookingPayload])
-        .select()
-        .single();
+      const { data: atomicResult, error } = await database.rpc(
+        "task6_create_room_booking_atomic",
+        {
+          p_hotel_slug: bookingPayload.hotel_slug,
+          p_booking: bookingPayload,
+          p_idempotency_key: idempotency.key
+        }
+      );
 
       if (error) {
-        if (idempotency.key && isRoomIdempotencyConflict(error)) {
-          const existingBooking = await findRoomBookingByIdempotency({
-            supabaseClient: database,
-            hotelSlug: slug,
-            key: idempotency.key
+        if (isTask6BookingIdempotencyConflict(error)) {
+          return res.status(409).json({
+            success: false,
+            code: "ROOM_BOOKING_IDEMPOTENCY_CONFLICT",
+            message: "This booking retry key was already used for a different request."
           });
-          if (existingBooking) {
-            return res.json({ success: true, idempotent: true, message: "Room booking request already submitted", booking: mapPublicBooking(existingBooking) });
-          }
+        }
+        if (isMissingTask6BookingAtomicRpc(error)) {
+          return res.status(503).json({
+            success: false,
+            code: "TASK6_BOOKING_ATOMIC_CREATE_NOT_READY",
+            message: "Atomic room booking creation is not initialized yet."
+          });
+        }
+        if (isTask6BookingMaintenanceConflict(error)) {
+          return res.status(409).json({
+            success: false,
+            code: "ROOM_MAINTENANCE_CONFLICT",
+            message: "This room is unavailable because of scheduled maintenance."
+          });
         }
         if (isRoomBookingOverlapError(error)) {
           return res.status(409).json({
@@ -1004,12 +1076,25 @@ router.post(
 
         throw error;
       }
+      const data = atomicResult?.booking || null;
+      if (!data) {
+        throw new Error("Atomic room booking creation returned no booking");
+      }
+
+      if (atomicResult?.idempotent === true) {
+        return res.json({
+          success: true,
+          idempotent: true,
+          message: "Room booking request already submitted",
+          booking: mapPublicBooking(data)
+        });
+      }
 
       void createNotificationEventSafely({
         databaseClient: database,
         tenantId: scope?.tenantId,
         propertyId: scope?.propertyId,
-        hotelSlug: data.hotel_slug || slug,
+        hotelSlug: data.hotel_slug || canonicalSlug,
         sourceType: "room_booking",
         sourceId: data.id,
         payload: {

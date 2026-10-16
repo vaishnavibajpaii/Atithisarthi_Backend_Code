@@ -98,6 +98,7 @@
     "audit:secrets": "node scripts/scan-secrets.js",
     "seed:staging": "node scripts/seed-staging.js",
     "test:golden-pricing": "node scripts/verify-golden-pricing.js",
+    "test:booking-transactional": "node --test tests/booking-transactional.test.js",
     "test:payment-hardening": "node --test tests/payment-hardening.test.js",
     "test:per-hotel-payment-gateway": "node --test tests/per-hotel-payment-gateway.test.js",
     "test:session-security": "node --test tests/session-security.test.js",

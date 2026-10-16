@@ -24,9 +24,13 @@ const {
 } = require("../utils/room-pricing");
 const { buildRoomRefundCreditNote } = require("../utils/room-credit-note");
 const {
+  buildRoomBookingRequestFingerprint,
+  classifyRoomBookingReplay,
   findRoomBookingByIdempotency,
   getRoomIdempotencyKey,
-  isRoomIdempotencyConflict
+  isMissingTask6BookingAtomicRpc,
+  isTask6BookingIdempotencyConflict,
+  isTask6BookingMaintenanceConflict
 } = require("../utils/room-idempotency");
 const {
   requireHotelFeature,
@@ -47,7 +51,6 @@ const {
   buildRoomAdvancePlan,
   buildRoomAdvanceReceipt,
   fetchRoomAdvancePolicy,
-  hashRoomAdvanceRequest,
   isMissingAdvanceSchemaError,
   normalizeRoomAdvancePolicy
 } = require("../utils/room-advance-payment");
@@ -1221,11 +1224,12 @@ router.post("/bookings", validateBody(staffRoomBookingCreateSchema), async (req,
     if (idempotency.error) {
       return res.status(400).json({ success: false, message: idempotency.error });
     }
-    if (idempotency.key) {
-      const existingBooking = await findRoomBookingByIdempotency({ supabaseClient: supabase, hotelSlug, key: idempotency.key });
-      if (existingBooking) {
-        return res.json({ success: true, idempotent: true, message: "Room booking already created", booking: buildStaffBookingResponse(existingBooking, isStaffManager(req)) });
-      }
+    if (!idempotency.key) {
+      return res.status(400).json({
+        success: false,
+        code: "ROOM_BOOKING_IDEMPOTENCY_REQUIRED",
+        message: "An Idempotency-Key header is required for room booking requests."
+      });
     }
 
     const {
@@ -1279,6 +1283,31 @@ router.post("/bookings", validateBody(staffRoomBookingCreateSchema), async (req,
             : "manager"
         }
       : null;
+    const requestFingerprint = buildRoomBookingRequestFingerprint({
+      booking: {
+        operation: "staff_room_booking_create",
+        hotel_slug: hotelSlug,
+        actor_id: req.staffUser?.sub || req.staffUser?.id || "",
+        actor_role: req.staffRole || "staff",
+        ...req.validatedBody
+      }
+    });
+    const existingBooking = await findRoomBookingByIdempotency({
+      supabaseClient: mutationDatabase(req),
+      hotelSlug,
+      key: idempotency.key
+    });
+    if (existingBooking) {
+      const replay = classifyRoomBookingReplay(existingBooking, requestFingerprint);
+      if (replay.replay) {
+        return res.json({ success: true, idempotent: true, message: "Room booking already created", booking: buildStaffBookingResponse(existingBooking, isStaffManager(req)) });
+      }
+      return res.status(409).json({
+        success: false,
+        code: "ROOM_BOOKING_IDEMPOTENCY_CONFLICT",
+        message: "This booking retry key was already used for a different request."
+      });
+    }
     const roomResult = await fetchBookableRoom({ hotelSlug, roomId });
 
     if (!roomResult.ok) {
@@ -1296,6 +1325,22 @@ router.post("/bookings", validateBody(staffRoomBookingCreateSchema), async (req,
     });
 
     if (hasConflict) {
+      const concurrentReplay = await findRoomBookingByIdempotency({
+        supabaseClient: mutationDatabase(req),
+        hotelSlug,
+        key: idempotency.key
+      });
+      const replay = classifyRoomBookingReplay(concurrentReplay, requestFingerprint);
+      if (replay.replay) {
+        return res.json({ success: true, idempotent: true, message: "Room booking already created", booking: buildStaffBookingResponse(concurrentReplay, isStaffManager(req)) });
+      }
+      if (replay.conflict) {
+        return res.status(409).json({
+          success: false,
+          code: "ROOM_BOOKING_IDEMPOTENCY_CONFLICT",
+          message: "This booking retry key was already used for a different request."
+        });
+      }
       return res.status(409).json({
         success: false,
         code: ROOM_BOOKING_CONFLICT_CODE,
@@ -1372,12 +1417,13 @@ router.post("/bookings", validateBody(staffRoomBookingCreateSchema), async (req,
       created_by_user_id: req.staffUser?.sub || req.staffUser?.id || null,
       created_by_role: req.staffRole || "staff",
       notes: notes || "",
+      idempotency_key: idempotency.key,
+      request_fingerprint: requestFingerprint,
       updated_at: new Date().toISOString()
     };
     if (totals.supportsSnapshot) {
       bookingPayload.rate_plan_id = totals.ratePlanId;
       bookingPayload.pricing_snapshot = totals.pricingSnapshot;
-      bookingPayload.idempotency_key = idempotency.key;
       if (totals.taxSnapshot?.supportsTaxSnapshot) {
         bookingPayload.tax_rule_id = totals.taxRuleId;
         bookingPayload.tax_snapshot = totals.taxSnapshot;
@@ -1389,17 +1435,6 @@ router.post("/bookings", validateBody(staffRoomBookingCreateSchema), async (req,
     }
 
     if (advancePlan.totalAmount > 0) {
-      bookingPayload.request_fingerprint = hashRoomAdvanceRequest({
-        booking: bookingPayload,
-        payments: advancePlan.payments
-      });
-      if (!idempotency.key) {
-        return res.status(400).json({
-          success: false,
-          code: "ROOM_ADVANCE_IDEMPOTENCY_REQUIRED",
-          message: "A booking retry key is required when an advance is collected."
-        });
-      }
       const actorId = req.staffUser?.sub || req.staffUser?.id || "";
       const { data: atomicResult, error: atomicError } = await mutationDatabase(req).rpc(
         "create_room_booking_with_advance",
@@ -1474,18 +1509,36 @@ router.post("/bookings", validateBody(staffRoomBookingCreateSchema), async (req,
       });
     }
 
-    const { data, error } = await mutationDatabase(req)
-      .from("room_bookings")
-      .insert([bookingPayload])
-      .select()
-      .single();
+    const { data: atomicResult, error } = await mutationDatabase(req).rpc(
+      "task6_create_room_booking_atomic",
+      {
+        p_hotel_slug: hotelSlug,
+        p_booking: bookingPayload,
+        p_idempotency_key: idempotency.key
+      }
+    );
 
     if (error) {
-      if (idempotency.key && isRoomIdempotencyConflict(error)) {
-        const existingBooking = await findRoomBookingByIdempotency({ supabaseClient: mutationDatabase(req), hotelSlug, key: idempotency.key });
-        if (existingBooking) {
-          return res.json({ success: true, idempotent: true, message: "Room booking already created", booking: buildStaffBookingResponse(existingBooking, isStaffManager(req)) });
-        }
+      if (isTask6BookingIdempotencyConflict(error)) {
+        return res.status(409).json({
+          success: false,
+          code: "ROOM_BOOKING_IDEMPOTENCY_CONFLICT",
+          message: "This booking retry key was already used for a different request."
+        });
+      }
+      if (isMissingTask6BookingAtomicRpc(error)) {
+        return res.status(503).json({
+          success: false,
+          code: "TASK6_BOOKING_ATOMIC_CREATE_NOT_READY",
+          message: "Atomic room booking creation is not initialized yet."
+        });
+      }
+      if (isTask6BookingMaintenanceConflict(error)) {
+        return res.status(409).json({
+          success: false,
+          code: "ROOM_MAINTENANCE_CONFLICT",
+          message: "This room is unavailable because of scheduled maintenance."
+        });
       }
       if (isRoomBookingOverlapError(error)) {
         return res.status(409).json({
@@ -1501,10 +1554,13 @@ router.post("/bookings", validateBody(staffRoomBookingCreateSchema), async (req,
 
       throw error;
     }
+    const data = atomicResult?.booking || null;
+    if (!data) throw new Error("Atomic room booking creation returned no booking");
 
-    res.status(201).json({
+    res.status(atomicResult?.idempotent ? 200 : 201).json({
       success: true,
-      message: "Room booking created",
+      idempotent: atomicResult?.idempotent === true,
+      message: atomicResult?.idempotent ? "Room booking already created" : "Room booking created",
       booking: buildStaffBookingResponse(data, isStaffManager(req))
     });
   } catch (error) {

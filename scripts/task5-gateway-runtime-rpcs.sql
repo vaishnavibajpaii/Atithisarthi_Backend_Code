@@ -353,12 +353,12 @@ begin
   end if;
 
   if v_has_existing_credential then
-    update public.payment_gateway_credentials
+    update public.payment_gateway_credentials as c
       set status = 'HISTORICAL'
-      where account_id = v_account.id and status = 'ACTIVE';
-    update public.payment_gateway_webhook_secrets
+      where c.account_id = v_account.id and c.status = 'ACTIVE';
+    update public.payment_gateway_webhook_secrets as w
       set status = 'HISTORICAL'
-      where account_id = v_account.id and status = 'ACTIVE';
+      where w.account_id = v_account.id and w.status = 'ACTIVE';
   end if;
 
   select vault.create_secret(
@@ -380,9 +380,9 @@ begin
     'RZP_CRED_' || repeat('0', 32), 1, p_key_id, v_api_vault_id,
     left(coalesce(p_actor_ref, 'hotel_owner'), 200), now(), p_validation_code
   );
-  update public.payment_gateway_credentials
+  update public.payment_gateway_credentials as c
     set status = 'ACTIVE'
-    where id = v_credential_id;
+    where c.id = v_credential_id;
 
   insert into public.payment_gateway_webhook_secrets (
     id, tenant_id, property_id, account_id, webhook_secret_ref, version,
@@ -392,13 +392,13 @@ begin
     'RZP_WEBHOOK_' || repeat('0', 32), 1, v_webhook_vault_id,
     left(coalesce(p_actor_ref, 'hotel_owner'), 200)
   );
-  update public.payment_gateway_webhook_secrets
+  update public.payment_gateway_webhook_secrets as w
     set status = 'ACTIVE'
-    where id = v_webhook_id;
+    where w.id = v_webhook_id;
 
-  update public.payment_gateway_accounts
+  update public.payment_gateway_accounts as a
     set status = 'ACTIVE', updated_by = left(coalesce(p_actor_ref, 'hotel_owner'), 200)
-    where id = v_account.id
+    where a.id = v_account.id
     returning * into v_account;
 
   insert into public.property_payment_gateway_policies (

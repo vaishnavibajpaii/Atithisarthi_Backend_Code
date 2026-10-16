@@ -15,8 +15,8 @@ begin;
 
 do $task5_retire_compromised$
 declare
-  -- REQUIRED: replace this sentinel with the canonical property slug.
-  v_hotel_slug text := '__REPLACE_WITH_CANONICAL_HOTEL_SLUG__';
+  -- This incident-response checkpoint is intentionally bound to Hotel A.
+  v_hotel_slug constant text := 'hotel-sai-raj';
   v_tenant_id uuid;
   v_property_id bigint;
   v_account_id uuid;
@@ -28,8 +28,7 @@ declare
   v_retired_api_count bigint;
   v_retired_webhook_count bigint;
 begin
-  if v_hotel_slug = '__REPLACE_WITH_CANONICAL_HOTEL_SLUG__'
-     or nullif(btrim(v_hotel_slug), '') is null then
+  if nullif(btrim(v_hotel_slug), '') is null then
     raise exception using errcode = '22023',
       message = 'TASK5_CANONICAL_HOTEL_SLUG_REQUIRED';
   end if;
