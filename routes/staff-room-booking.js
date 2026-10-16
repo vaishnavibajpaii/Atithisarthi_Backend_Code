@@ -30,7 +30,8 @@ const {
   getRoomIdempotencyKey,
   isMissingTask6BookingAtomicRpc,
   isTask6BookingIdempotencyConflict,
-  isTask6BookingMaintenanceConflict
+  isTask6BookingMaintenanceConflict,
+  normalizeTask6BookingAtomicResult
 } = require("../utils/room-idempotency");
 const {
   requireHotelFeature,
@@ -1554,13 +1555,14 @@ router.post("/bookings", validateBody(staffRoomBookingCreateSchema), async (req,
 
       throw error;
     }
-    const data = atomicResult?.booking || null;
+    const atomicPayload = normalizeTask6BookingAtomicResult(atomicResult);
+    const data = atomicPayload?.booking || null;
     if (!data) throw new Error("Atomic room booking creation returned no booking");
 
-    res.status(atomicResult?.idempotent ? 200 : 201).json({
+    res.status(atomicPayload?.idempotent ? 200 : 201).json({
       success: true,
-      idempotent: atomicResult?.idempotent === true,
-      message: atomicResult?.idempotent ? "Room booking already created" : "Room booking created",
+      idempotent: atomicPayload?.idempotent === true,
+      message: atomicPayload?.idempotent ? "Room booking already created" : "Room booking created",
       booking: buildStaffBookingResponse(data, isStaffManager(req))
     });
   } catch (error) {

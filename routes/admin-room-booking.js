@@ -29,7 +29,8 @@ const {
   getRoomIdempotencyKey,
   isMissingTask6BookingAtomicRpc,
   isTask6BookingIdempotencyConflict,
-  isTask6BookingMaintenanceConflict
+  isTask6BookingMaintenanceConflict,
+  normalizeTask6BookingAtomicResult
 } = require("../utils/room-idempotency");
 const {
   buildHotelFeatureSettingsRow,
@@ -1362,7 +1363,8 @@ router.post("/bookings", validateBody(adminRoomBookingCreateSchema), async (req,
       throw error;
     }
 
-    createdBooking = atomicResult?.booking || null;
+    const atomicPayload = normalizeTask6BookingAtomicResult(atomicResult);
+    createdBooking = atomicPayload?.booking || null;
     if (!createdBooking) throw new Error("Atomic room booking creation returned no booking");
 
     if (totals.advancePaid > 0) {

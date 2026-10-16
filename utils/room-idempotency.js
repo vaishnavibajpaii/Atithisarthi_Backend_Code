@@ -99,6 +99,13 @@ function isTask6BookingMaintenanceConflict(error) {
   return details.includes("TASK6_BOOKING_MAINTENANCE_CONFLICT");
 }
 
+function normalizeTask6BookingAtomicResult(value) {
+  const row = Array.isArray(value) ? value[0] : value;
+  if (!row || typeof row !== "object") return null;
+  const wrapped = row.task6_create_room_booking_atomic;
+  return wrapped && typeof wrapped === "object" ? wrapped : row;
+}
+
 module.exports = {
   buildRoomBookingRequestFingerprint,
   canonicalRoomBookingRequest,
@@ -109,5 +116,6 @@ module.exports = {
   isRoomIdempotencyConflict,
   isTask6BookingIdempotencyConflict,
   isTask6BookingMaintenanceConflict,
+  normalizeTask6BookingAtomicResult,
   stableJson
 };

@@ -10,7 +10,8 @@ const {
   classifyRoomBookingReplay,
   isMissingTask6BookingAtomicRpc,
   isTask6BookingIdempotencyConflict,
-  isTask6BookingMaintenanceConflict
+  isTask6BookingMaintenanceConflict,
+  normalizeTask6BookingAtomicResult
 } = require("../utils/room-idempotency");
 const {
   ACTIVE_BLOCKING_BOOKING_STATUSES,
@@ -166,4 +167,14 @@ test("TASK6-B RPC serializes retries and leaves overlap authority in PostgreSQL"
 test("tenant-runtime writes allow the TASK6-B atomic booking RPC", () => {
   const source = read("utils/tenant-mutation-client.js");
   assert.match(source, /TENANT_RPCS[\s\S]*task6_create_room_booking_atomic/);
+});
+
+test("TASK6-B result normalization supports PostgREST and tenant-runtime shapes", () => {
+  const payload = { idempotent: false, booking: { id: 42 } };
+  assert.deepEqual(normalizeTask6BookingAtomicResult(payload), payload);
+  assert.deepEqual(
+    normalizeTask6BookingAtomicResult([{ task6_create_room_booking_atomic: payload }]),
+    payload
+  );
+  assert.equal(normalizeTask6BookingAtomicResult([]), null);
 });

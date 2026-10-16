@@ -51,7 +51,8 @@ const {
   getRoomIdempotencyKey,
   isMissingTask6BookingAtomicRpc,
   isTask6BookingIdempotencyConflict,
-  isTask6BookingMaintenanceConflict
+  isTask6BookingMaintenanceConflict,
+  normalizeTask6BookingAtomicResult
 } = require("../utils/room-idempotency");
 const {
   ROOM_BOOKING_CONFLICT_CODE,
@@ -1076,12 +1077,13 @@ router.post(
 
         throw error;
       }
-      const data = atomicResult?.booking || null;
+      const atomicPayload = normalizeTask6BookingAtomicResult(atomicResult);
+      const data = atomicPayload?.booking || null;
       if (!data) {
         throw new Error("Atomic room booking creation returned no booking");
       }
 
-      if (atomicResult?.idempotent === true) {
+      if (atomicPayload?.idempotent === true) {
         return res.json({
           success: true,
           idempotent: true,
