@@ -162,3 +162,8 @@ test("TASK6-B RPC serializes retries and leaves overlap authority in PostgreSQL"
   assert.doesNotMatch(migration, /update\s+public\.room_bookings/i);
   assert.doesNotMatch(migration, /delete\s+from\s+public\.room_bookings/i);
 });
+
+test("tenant-runtime writes allow the TASK6-B atomic booking RPC", () => {
+  const source = read("utils/tenant-mutation-client.js");
+  assert.match(source, /TENANT_RPCS[\s\S]*task6_create_room_booking_atomic/);
+});
