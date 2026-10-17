@@ -12,6 +12,7 @@ const staffTableOrderItemSchema = z.object({
 });
 
 const staffTableOrderSchema = z.object({
+  clientRequestId: z.string().trim().min(8).max(200).optional(),
   tableNumber: z.string().trim().min(1).max(80),
   restaurantTableId: z.union([z.string().trim().min(1).max(40), z.number().int().positive()]).optional(),
   customerName: z.string().trim().max(100).optional(),
@@ -21,6 +22,7 @@ const staffTableOrderSchema = z.object({
 });
 
 const staffRoomServiceOrderSchema = z.object({
+  clientRequestId: z.string().trim().min(8).max(200).optional(),
   roomBookingId: z.coerce.number().int().positive(),
   customerName: z.string().trim().max(100).optional(),
   customerPhone: z.string().trim().max(20).optional(),

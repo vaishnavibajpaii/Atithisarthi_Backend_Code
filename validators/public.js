@@ -15,6 +15,7 @@ const orderContextSchema = z.object({
 }).optional();
 
 const orderSchema = z.object({
+  clientRequestId: z.string().trim().min(8).max(200).optional(),
   hotelName: z.string().trim().min(1),
   hotelSlug: z.string().trim().min(1).optional().nullable(),
   customerName: z.string().trim().min(2).max(100),

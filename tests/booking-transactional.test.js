@@ -178,3 +178,12 @@ test("TASK6-B result normalization supports PostgREST and tenant-runtime shapes"
   );
   assert.equal(normalizeTask6BookingAtomicResult([]), null);
 });
+
+test("TASK6-B runtime fix preserves least privilege and room serialization", () => {
+  const migration = read("scripts/task6-b-booking-atomic-runtime-fix.sql");
+  assert.match(migration, /from public\.hotels\s+where slug = v_slug;/i);
+  assert.doesNotMatch(migration, /where slug = v_slug\s+for key share/i);
+  assert.match(migration, /from public\.rooms[\s\S]*for update/i);
+  assert.match(migration, /has_table_privilege\('app_tenant_runtime', 'public\.hotels', 'UPDATE'\)/i);
+  assert.match(migration, /revoke create on schema public from app_tenant_rpc_owner/i);
+});

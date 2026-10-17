@@ -17,6 +17,7 @@ function main() {
   const routeSource = read("routes/staff.js");
   const publicOrderRouteSource = read("routes/orders.js");
   const migrationSource = read("scripts/create-staff-active-table-order-guard.sql");
+  const task6MigrationSource = read("scripts/task6-c-order-atomic-idempotency.sql");
 
   requirePattern(
     routeSource,
@@ -30,18 +31,28 @@ function main() {
   );
   requirePattern(
     routeSource,
-    /insertStaffTableOrderWithActiveTableGuard\([\s\S]*if \(conflict\)[\s\S]*status\(409\)[\s\S]*code: "TABLE_HAS_ACTIVE_ORDER"/m,
-    "staff order conflict response"
+    /executeTask6OrderAtomic\([\s\S]*ORDER_CREATION_SCOPES\.STAFF_TABLE[\s\S]*if \(conflict\)[\s\S]*status\(409\)[\s\S]*code: "TABLE_HAS_ACTIVE_ORDER"/m,
+    "Task 6 atomic staff order conflict response"
   );
   requirePattern(
     routeSource,
-    /code: "ACTIVE_TABLE_GUARD_NOT_INITIALIZED"/m,
-    "fail-closed missing migration response"
+    /code: "TASK6_ORDER_ATOMIC_CREATE_NOT_READY"/m,
+    "fail-closed missing Task 6 migration response"
   );
   requirePattern(
     publicOrderRouteSource,
-    /hasDineInTableContext\(requestOrderContext\)[\s\S]*isActiveTableOrderUniqueConflict\(error\)[\s\S]*status\(409\)[\s\S]*code: "TABLE_HAS_ACTIVE_ORDER"/m,
-    "safe QR root-order conflict response"
+    /executeTask6OrderAtomic\([\s\S]*ORDER_CREATION_SCOPES\.PUBLIC[\s\S]*code === "TABLE_HAS_ACTIVE_ORDER"[\s\S]*status\(409\)/m,
+    "atomic public root-order conflict response"
+  );
+  requirePattern(
+    task6MigrationSource,
+    /pg_advisory_xact_lock\([\s\S]*get_staff_active_table_order\([\s\S]*TABLE_HAS_ACTIVE_ORDER/m,
+    "Task 6 transaction-scoped table lock and conflict lookup"
+  );
+  requirePattern(
+    task6MigrationSource,
+    /task6_order_snapshot_valid\([\s\S]*insert into public\.orders[\s\S]*returning \* into v_created/m,
+    "Task 6 validated atomic order insert"
   );
   requirePattern(
     migrationSource,

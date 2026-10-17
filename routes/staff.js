@@ -70,6 +70,7 @@ const {
   buildOrderItemSnapshots,
   buildComboSummaryLine
 } = require("../utils/order-item-snapshots");
+const { buildExactOrderFinancialSnapshot } = require("../utils/exact-money");
 const {
   fetchMenuComboPresentationMap,
   isMissingMenuComboSchemaError,
@@ -97,6 +98,15 @@ const {
 const {
   getStaffTenantMutationClient
 } = require("../utils/tenant-route-database");
+const {
+  ORDER_CREATION_SCOPES,
+  buildOrderCreationRequestFingerprint,
+  executeTask6OrderAtomic,
+  getOrderIdempotencyKey,
+  isMissingTask6OrderAtomicRpc,
+  isTask6OrderIdempotencyConflict,
+  isTask6OrderSnapshotInvalid
+} = require("../utils/order-idempotency");
 const {
   createTenantMutationClient
 } = require("../utils/tenant-mutation-client");
@@ -895,27 +905,22 @@ async function calculateStaffTableOrderPricing({ hotelSlug, items }) {
     };
   }
 
-  const verifiedItems = await buildOrderItemSnapshots({
+  const itemSnapshots = await buildOrderItemSnapshots({
     hotelSlug: hotel.hotel_slug,
     requestedItems: items || [],
     menuItemRows: Array.from(menuItemsById.values())
   });
-  const subtotal = verifiedItems.reduce((sum, item) => sum + item.lineTotal, 0);
   const gstPercent = Number(hotel.gst_percent || 5);
-  const gst = Math.round((subtotal * gstPercent) / 100);
-  const normalTotal = subtotal + gst;
+  const exactSnapshot = buildExactOrderFinancialSnapshot({
+    items: itemSnapshots,
+    gstPercent,
+    deliveryCharge: 0
+  });
 
   return {
     hotel,
-    items: verifiedItems,
-    totals: {
-      subtotal,
-      gst,
-      deliveryCharge: 0,
-      gstPercent,
-      normalTotal,
-      total: normalTotal
-    }
+    items: exactSnapshot.items,
+    totals: exactSnapshot.totals
   };
 }
 
@@ -3840,6 +3845,16 @@ router.post("/orders", requireStaffAuth, requireStaffFoodModule, validateBody(st
     const customerPhone = normalizeStaffText(req.validatedBody.customerPhone, 20);
     const note = normalizeStaffText(req.validatedBody.note, 1000);
     const items = req.validatedBody.items || [];
+    const idempotency = getOrderIdempotencyKey(req, req.validatedBody.clientRequestId);
+    if (idempotency.error) {
+      return res.status(400).json({
+        success: false,
+        code: idempotency.error === "Idempotency-Key is required"
+          ? "ORDER_IDEMPOTENCY_REQUIRED"
+          : "ORDER_IDEMPOTENCY_INVALID",
+        message: idempotency.error
+      });
+    }
     const pricing = await calculateStaffTableOrderPricing({ hotelSlug, items });
 
     if (pricing.error) {
@@ -3892,11 +3907,35 @@ router.post("/orders", requireStaffAuth, requireStaffFoodModule, validateBody(st
       ...getOrderTrackingColumns()
     };
     const databaseClient = await getStaffTenantMutationClient(req, supabase);
-    const { data, error, conflict } = await insertStaffTableOrderWithActiveTableGuard(
+    const requestFingerprint = buildOrderCreationRequestFingerprint({
+      operationScope: ORDER_CREATION_SCOPES.STAFF_TABLE,
+      request: {
+        hotelSlug,
+        tableNumber,
+        restaurantTableId: tableResolution.restaurantTableId || null,
+        customerName,
+        customerPhone,
+        note,
+        createdByStaffId: req.staffUser?.sub || req.staffUser?.id || null,
+        items: items.map((item) => ({
+          id: String(item.id || ""),
+          qty: item.qty,
+          note: item.note || ""
+        }))
+      }
+    });
+    const atomic = await executeTask6OrderAtomic({
       databaseClient,
-      baseOrderRow,
-      optionalOrderColumns
-    );
+      operationScope: ORDER_CREATION_SCOPES.STAFF_TABLE,
+      idempotencyKey: idempotency.key,
+      requestFingerprint,
+      order: { ...baseOrderRow, ...optionalOrderColumns }
+    });
+    const atomicResult = atomic.data;
+    const data = atomicResult?.order || null;
+    const conflict = atomicResult?.code === "TABLE_HAS_ACTIVE_ORDER"
+      ? atomicResult.activeOrder || {}
+      : null;
 
     if (conflict) {
       return res.status(409).json({
@@ -3912,33 +3951,35 @@ router.post("/orders", requireStaffAuth, requireStaffFoodModule, validateBody(st
       });
     }
 
-    if (error) {
-      if (isMissingStaffActiveTableOrderGuard(error)) {
+    if (atomic.error) {
+      if (isMissingTask6OrderAtomicRpc(atomic.error)) {
         return res.status(503).json({
           success: false,
-          code: "ACTIVE_TABLE_GUARD_NOT_INITIALIZED",
-          message: "Active table order protection is not initialized yet"
+          code: "TASK6_ORDER_ATOMIC_CREATE_NOT_READY",
+          message: "Atomic order creation is not initialized yet"
         });
       }
-
-      if (isMissingOrderTableContextColumnsError(error)) {
-        return res.status(400).json({
+      if (isTask6OrderIdempotencyConflict(atomic.error)) {
+        return res.status(409).json({
           success: false,
-          message: "Order table context fields are not initialized yet"
+          code: "ORDER_IDEMPOTENCY_CONFLICT",
+          message: "This order request key was already used for different details"
         });
       }
-
-      if (isMissingOrderBillingColumnsError(error)) {
-        return res.status(400).json({
+      if (isTask6OrderSnapshotInvalid(atomic.error)) {
+        return res.status(500).json({
           success: false,
-          message: "Order billing fields are not initialized yet"
+          code: "ORDER_FINANCIAL_SNAPSHOT_INVALID",
+          message: "The server could not validate the final order total"
         });
       }
-
-      throw error;
+      throw atomic.error;
+    }
+    if (!data) {
+      throw new Error("TASK6_ORDER_ATOMIC_RESULT_INVALID");
     }
 
-    void createNotificationEventSafely({
+    if (atomicResult.created === true) void createNotificationEventSafely({
       hotelSlug: data.hotel_slug || hotelSlug,
       sourceType: "order",
       sourceId: data.id,
@@ -3975,9 +4016,12 @@ router.post("/orders", requireStaffAuth, requireStaffFoodModule, validateBody(st
     const tracking = buildOrderTrackingReference(data);
     const createdByStaffMap = await getOrderCreatedByStaffMap(supabase, [data]);
 
-    res.status(201).json({
+    res.status(atomicResult.idempotent === true ? 200 : 201).json({
       success: true,
-      message: "Staff table order saved",
+      idempotent: atomicResult.idempotent === true,
+      message: atomicResult.idempotent === true
+        ? "This staff table order request was already completed"
+        : "Staff table order saved",
       order: buildStaffOrderResponse(
         data,
         createdByStaffMap,
@@ -4222,6 +4266,16 @@ router.post("/room-service-orders", requireStaffAuth, requireStaffRoomService, v
       : normalizeStaffText(req.validatedBody.paymentMethod, 40) || "COD";
     const note = normalizeStaffText(req.validatedBody.note, 1000);
     const items = req.validatedBody.items || [];
+    const idempotency = getOrderIdempotencyKey(req, req.validatedBody.clientRequestId);
+    if (idempotency.error) {
+      return res.status(400).json({
+        success: false,
+        code: idempotency.error === "Idempotency-Key is required"
+          ? "ORDER_IDEMPOTENCY_REQUIRED"
+          : "ORDER_IDEMPOTENCY_INVALID",
+        message: idempotency.error
+      });
+    }
     const pricing = await calculateStaffTableOrderPricing({ hotelSlug, items });
 
     if (pricing.error) {
@@ -4279,35 +4333,64 @@ router.post("/room-service-orders", requireStaffAuth, requireStaffRoomService, v
       ...getOrderTrackingColumns()
     };
     const databaseClient = await getStaffTenantMutationClient(req, supabase);
-    const { data, error } = await insertStaffTableOrderRow(databaseClient, baseOrderRow, optionalOrderColumns);
+    const requestFingerprint = buildOrderCreationRequestFingerprint({
+      operationScope: ORDER_CREATION_SCOPES.STAFF_ROOM_SERVICE,
+      request: {
+        hotelSlug,
+        roomBookingId: booking.id,
+        roomId: room.id,
+        customerName,
+        customerPhone,
+        paymentMethod,
+        chargeToRoom,
+        note,
+        createdByStaffId: req.staffUser?.sub || req.staffUser?.id || null,
+        items: items.map((item) => ({
+          id: String(item.id || ""),
+          qty: item.qty,
+          note: item.note || ""
+        }))
+      }
+    });
+    const atomic = await executeTask6OrderAtomic({
+      databaseClient,
+      operationScope: ORDER_CREATION_SCOPES.STAFF_ROOM_SERVICE,
+      idempotencyKey: idempotency.key,
+      requestFingerprint,
+      order: { ...baseOrderRow, ...optionalOrderColumns }
+    });
+    const atomicResult = atomic.data;
+    const data = atomicResult?.order || null;
 
-    if (error) {
-      if (isMissingOrderRoomServiceColumnsError(error)) {
-        return res.status(400).json({
+    if (atomic.error) {
+      if (isMissingTask6OrderAtomicRpc(atomic.error)) {
+        return res.status(503).json({
           success: false,
-          schemaReady: false,
-          message: "Order room service fields are not initialized yet"
+          code: "TASK6_ORDER_ATOMIC_CREATE_NOT_READY",
+          message: "Atomic order creation is not initialized yet"
         });
       }
-
-      if (isMissingOrderTableContextColumnsError(error)) {
-        return res.status(400).json({
+      if (isTask6OrderIdempotencyConflict(atomic.error)) {
+        return res.status(409).json({
           success: false,
-          message: "Order table context fields are not initialized yet"
+          code: "ORDER_IDEMPOTENCY_CONFLICT",
+          message: "This room-service request key was already used for different details"
         });
       }
-
-      if (isMissingOrderBillingColumnsError(error)) {
-        return res.status(400).json({
+      if (isTask6OrderSnapshotInvalid(atomic.error)) {
+        return res.status(500).json({
           success: false,
-          message: "Order billing fields are not initialized yet"
+          code: "ORDER_FINANCIAL_SNAPSHOT_INVALID",
+          message: "The server could not validate the final order total"
         });
       }
-
-      throw error;
+      throw atomic.error;
+    }
+    if (!data) {
+      throw new Error("TASK6_ORDER_ATOMIC_RESULT_INVALID");
     }
 
-    void createNotificationEventSafely({
+    if (atomicResult.created === true) void createNotificationEventSafely({
       hotelSlug: data.hotel_slug || hotelSlug,
       sourceType: "order",
       sourceId: data.id,
@@ -4351,9 +4434,12 @@ router.post("/room-service-orders", requireStaffAuth, requireStaffRoomService, v
     const tracking = buildOrderTrackingReference(data);
     const createdByStaffMap = await getOrderCreatedByStaffMap(supabase, [data]);
 
-    res.status(201).json({
+    res.status(atomicResult.idempotent === true ? 200 : 201).json({
       success: true,
-      message: "Room service order saved",
+      idempotent: atomicResult.idempotent === true,
+      message: atomicResult.idempotent === true
+        ? "This room-service request was already completed"
+        : "Room service order saved",
       order: buildStaffOrderResponse(data, createdByStaffMap, {
         includeFinancials: canStaffViewOrderFinancials(req)
       }),

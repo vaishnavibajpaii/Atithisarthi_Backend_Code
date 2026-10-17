@@ -24,9 +24,19 @@ const {
   buildOrderItemSnapshots,
   buildComboSummaryLine
 } = require("../utils/order-item-snapshots");
+const { buildExactOrderFinancialSnapshot } = require("../utils/exact-money");
 const { validateRequestedMenuCombos } = require("../utils/menu-combos");
 const { filterEligibleMenuItems } = require("../utils/menu-categories");
 const { resolveTableForOrder } = require("../utils/restaurant-tables");
+const {
+  ORDER_CREATION_SCOPES,
+  buildOrderCreationRequestFingerprint,
+  executeTask6OrderAtomic,
+  getOrderIdempotencyKey,
+  isMissingTask6OrderAtomicRpc,
+  isTask6OrderIdempotencyConflict,
+  isTask6OrderSnapshotInvalid
+} = require("../utils/order-idempotency");
 
 // ✅ Added imports
 const { validateBody } = require("../validators/common");
@@ -213,6 +223,31 @@ function formatMoney(amount = 0) {
   return `Rs. ${Number(amount || 0).toFixed(2)}`;
 }
 
+function buildPublicCreatedOrder(order = {}) {
+  return {
+    id: order.id ? String(order.id) : "",
+    hotel_name: order.hotel_name || "",
+    hotel_slug: order.hotel_slug || "",
+    customer_name: order.customer_name || "",
+    customer_phone: order.customer_phone || "",
+    customer_address: order.customer_address || "",
+    payment_method: order.payment_method || "",
+    note: order.note || "",
+    items: Array.isArray(order.items) ? order.items : [],
+    totals: order.totals && typeof order.totals === "object" && !Array.isArray(order.totals)
+      ? order.totals
+      : {},
+    whatsapp_message: order.whatsapp_message || "",
+    status: order.status || "new",
+    order_type: order.order_type || "",
+    table_number: order.table_number || "",
+    order_source: order.order_source || "",
+    payment_status: order.payment_status || "",
+    billing_status: order.billing_status || "",
+    created_at: order.created_at || ""
+  };
+}
+
 function getUpiDiscountPercent(hotel = {}) {
   const candidate = Number(hotel?.theme?.payment?.upiDiscountPercent);
 
@@ -305,40 +340,28 @@ async function calculateVerifiedOrderPricing({ hotelSlug, items, paymentMethod, 
     };
   }
 
-  const verifiedItems = await buildOrderItemSnapshots({
+  const itemSnapshots = await buildOrderItemSnapshots({
     hotelSlug: hotel.hotel_slug,
     requestedItems: items || [],
     menuItemRows: Array.from(menuItemsById.values())
   });
-  const subtotal = verifiedItems.reduce((sum, item) => sum + item.lineTotal, 0);
   const gstPercent = Number(hotel.gst_percent || 5);
-  const gst = Math.round((subtotal * gstPercent) / 100);
   const deliveryCharge = getDeliveryCharge(hotel, orderContext);
-  const normalTotal = subtotal + gst + deliveryCharge;
   const upiDiscountPercent = getUpiDiscountPercent(hotel);
-  const gpayDiscount = Math.round((normalTotal * upiDiscountPercent) / 100);
-  const gpayFinalTotal = Math.max(0, normalTotal - gpayDiscount);
   const isUpi = isUpiPaymentMethod(paymentMethod);
-  const verifiedTotals = {
-    subtotal,
-    gst,
-    deliveryCharge,
+  const exactSnapshot = buildExactOrderFinancialSnapshot({
+    items: itemSnapshots,
     gstPercent,
-    normalTotal,
+    deliveryCharge,
     upiDiscountPercent,
-    total: normalTotal
-  };
-
-  if (isUpi) {
-    verifiedTotals.gpayDiscount = gpayDiscount;
-    verifiedTotals.gpayFinalTotal = gpayFinalTotal;
-    verifiedTotals.total = gpayFinalTotal;
-  }
+    includeUpiPolicy: true,
+    applyUpiDiscount: isUpi
+  });
 
   return {
     hotel,
-    items: verifiedItems,
-    totals: verifiedTotals
+    items: exactSnapshot.items,
+    totals: exactSnapshot.totals
   };
 }
 
@@ -538,7 +561,8 @@ router.post("/", publicOrderLimiter, validateBody(orderSchema), async (req, res)
       items,
       totals,
       whatsappMessage,
-      orderContext
+      orderContext,
+      clientRequestId
     } = req.validatedBody;
 
     requestHotelSlug = hotelSlug;
@@ -637,6 +661,16 @@ router.post("/", publicOrderLimiter, validateBody(orderSchema), async (req, res)
     }
 
     const safeOrderContext = requestOrderContext;
+    const idempotency = getOrderIdempotencyKey(req, clientRequestId);
+    if (idempotency.error) {
+      return res.status(400).json({
+        success: false,
+        code: idempotency.error === "Idempotency-Key is required"
+          ? "ORDER_IDEMPOTENCY_REQUIRED"
+          : "ORDER_IDEMPOTENCY_INVALID",
+        message: idempotency.error
+      });
+    }
     const approvedHotelName = verifiedPricing.hotel.hotel_name || hotelName || "Unknown Hotel";
     const approvedWhatsappMessage = buildVerifiedOrderSummary({
       hotelName: approvedHotelName,
@@ -666,7 +700,7 @@ router.post("/", publicOrderLimiter, validateBody(orderSchema), async (req, res)
       payment_method: paymentMethod || "COD",
       note: note || "",
       items: verifiedPricing.items,
-      totals: verifiedPricing.totals || totals || {},
+      totals: verifiedPricing.totals,
       whatsapp_message: approvedWhatsappMessage || whatsappMessage || "",
       status: "new"
     };
@@ -684,16 +718,72 @@ router.post("/", publicOrderLimiter, validateBody(orderSchema), async (req, res)
         : {}),
       ...getOrderTrackingColumns()
     };
-    const { data, error } = await insertOrderRow(
-      baseOrderRow,
-      optionalOrderColumns,
-      requestLogMeta,
-      database
-    );
+    const requestFingerprint = buildOrderCreationRequestFingerprint({
+      operationScope: ORDER_CREATION_SCOPES.PUBLIC,
+      request: {
+        hotelSlug: scope?.propertySlug || verifiedPricing.hotel.hotel_slug || hotelSlug,
+        customerName,
+        customerPhone,
+        customerAddress,
+        paymentMethod: paymentMethod || "COD",
+        paymentConfirmed: paymentConfirmed === true,
+        note: note || "",
+        orderContext: safeOrderContext || null,
+        items: (items || []).map((item) => ({ id: String(item.id || ""), qty: item.qty }))
+      }
+    });
+    const atomicOrderRow = {
+      ...baseOrderRow,
+      ...optionalOrderColumns
+    };
+    const atomic = await executeTask6OrderAtomic({
+      databaseClient: database,
+      operationScope: ORDER_CREATION_SCOPES.PUBLIC,
+      idempotencyKey: idempotency.key,
+      requestFingerprint,
+      order: atomicOrderRow
+    });
 
-    if (error) throw error;
+    if (atomic.error) {
+      if (isMissingTask6OrderAtomicRpc(atomic.error)) {
+        return res.status(503).json({
+          success: false,
+          code: "TASK6_ORDER_ATOMIC_CREATE_NOT_READY",
+          message: "Atomic order creation is not initialized yet"
+        });
+      }
+      if (isTask6OrderIdempotencyConflict(atomic.error)) {
+        return res.status(409).json({
+          success: false,
+          code: "ORDER_IDEMPOTENCY_CONFLICT",
+          message: "This order request key was already used for different details"
+        });
+      }
+      if (isTask6OrderSnapshotInvalid(atomic.error)) {
+        return res.status(500).json({
+          success: false,
+          code: "ORDER_FINANCIAL_SNAPSHOT_INVALID",
+          message: "The server could not validate the final order total"
+        });
+      }
+      throw atomic.error;
+    }
 
-    void createNotificationEventSafely({
+    const atomicResult = atomic.data;
+    if (atomicResult?.code === "TABLE_HAS_ACTIVE_ORDER") {
+      return res.status(409).json({
+        success: false,
+        code: "TABLE_HAS_ACTIVE_ORDER",
+        message: "This table already has an active order. Open the existing order instead.",
+        activeOrder: atomicResult.activeOrder || null
+      });
+    }
+    const data = atomicResult?.order;
+    if (!data) {
+      throw new Error("TASK6_ORDER_ATOMIC_RESULT_INVALID");
+    }
+
+    if (atomicResult.created === true) void createNotificationEventSafely({
       databaseClient: database,
       tenantId: scope?.tenantId,
       propertyId: scope?.propertyId,
@@ -714,7 +804,7 @@ router.post("/", publicOrderLimiter, validateBody(orderSchema), async (req, res)
         totals:
           data.totals && typeof data.totals === "object" && !Array.isArray(data.totals)
             ? data.totals
-            : totals || {},
+            : verifiedPricing.totals,
         whatsappMessage: data.whatsapp_message || whatsappMessage || "",
         orderContext: safeOrderContext,
         status: data.status || "new"
@@ -722,23 +812,27 @@ router.post("/", publicOrderLimiter, validateBody(orderSchema), async (req, res)
     });
 
     // ✅ Generate WhatsApp link
+    const finalWhatsappMessage = data.whatsapp_message || approvedWhatsappMessage;
     const ownerWhatsAppNumber = await getOwnerWhatsAppNumber(
       data.hotel_slug || hotelSlug,
       requestLogMeta
     );
-    const ownerWhatsappLink = approvedWhatsappMessage && ownerWhatsAppNumber
-      ? `https://wa.me/${ownerWhatsAppNumber}?text=${encodeURIComponent(approvedWhatsappMessage)}`
+    const ownerWhatsappLink = finalWhatsappMessage && ownerWhatsAppNumber
+      ? `https://wa.me/${ownerWhatsAppNumber}?text=${encodeURIComponent(finalWhatsappMessage)}`
       : "";
     const tracking = buildOrderTrackingReference(data);
 
     // ✅ Final response
-    res.status(201).json({
+    res.status(atomicResult.idempotent === true ? 200 : 201).json({
       success: true,
-      message: "Order saved successfully",
-      order: data,
+      idempotent: atomicResult.idempotent === true,
+      message: atomicResult.idempotent === true
+        ? "This order request was already completed"
+        : "Order saved successfully",
+      order: buildPublicCreatedOrder(data),
       tracking,
       trackingReady: !!tracking,
-      preview: approvedWhatsappMessage,
+      preview: finalWhatsappMessage,
       orderContext: safeOrderContext,
       ownerWhatsappLink,
       whatsappLinkReady: !!ownerWhatsappLink

@@ -1,0 +1,247 @@
+"use strict";
+
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const test = require("node:test");
+
+const {
+  ORDER_CREATION_SCOPES,
+  buildOrderCreationRequestFingerprint,
+  executeTask6OrderAtomic,
+  getOrderIdempotencyKey,
+  isMissingTask6OrderAtomicRpc,
+  isTask6OrderIdempotencyConflict,
+  isTask6OrderSnapshotInvalid,
+  normalizeTask6OrderAtomicResult
+} = require("../utils/order-idempotency");
+const {
+  buildExactOrderFinancialSnapshot,
+  decimalToScaledInteger
+} = require("../utils/exact-money");
+
+const backendRoot = path.resolve(__dirname, "..");
+const workspaceRoot = path.resolve(backendRoot, "..");
+
+function readBackend(relativePath) {
+  return fs.readFileSync(path.join(backendRoot, relativePath), "utf8");
+}
+
+function readWorkspace(relativePath) {
+  return fs.readFileSync(path.join(workspaceRoot, relativePath), "utf8");
+}
+
+test("order request fingerprints are canonical and reject changed intent", () => {
+  const original = buildOrderCreationRequestFingerprint({
+    operationScope: ORDER_CREATION_SCOPES.PUBLIC,
+    request: {
+      hotelSlug: "hotel-a",
+      note: "less spicy",
+      items: [{ id: "7", qty: 2 }]
+    }
+  });
+  const replay = buildOrderCreationRequestFingerprint({
+    request: {
+      items: [{ qty: 2, id: "7" }],
+      note: "less spicy",
+      hotelSlug: "hotel-a"
+    },
+    operationScope: ORDER_CREATION_SCOPES.PUBLIC
+  });
+  const changed = buildOrderCreationRequestFingerprint({
+    operationScope: ORDER_CREATION_SCOPES.PUBLIC,
+    request: {
+      hotelSlug: "hotel-a",
+      note: "less spicy",
+      items: [{ id: "7", qty: 3 }]
+    }
+  });
+
+  assert.match(original, /^[a-f0-9]{64}$/);
+  assert.equal(replay, original);
+  assert.notEqual(changed, original);
+});
+
+test("new POS snapshots use exact minor-unit math with the existing whole-rupee policy", () => {
+  const snapshot = buildExactOrderFinancialSnapshot({
+    items: [{ id: "7", qty: 3, price: "19.99", lineTotal: 999999 }],
+    gstPercent: "5",
+    deliveryCharge: "10.25",
+    upiDiscountPercent: "10",
+    includeUpiPolicy: true,
+    applyUpiDiscount: true
+  });
+
+  assert.equal(decimalToScaledInteger("19.99", 2), 1999n);
+  assert.deepEqual(snapshot.items.map(({ qty, price, lineTotal }) => ({ qty, price, lineTotal })), [
+    { qty: 3, price: 19.99, lineTotal: 59.97 }
+  ]);
+  assert.deepEqual(snapshot.totals, {
+    subtotal: 59.97,
+    gst: 3,
+    deliveryCharge: 10.25,
+    gstPercent: 5,
+    normalTotal: 73.22,
+    total: 66.22,
+    upiDiscountPercent: 10,
+    gpayDiscount: 7,
+    gpayFinalTotal: 66.22
+  });
+});
+
+test("exact POS math avoids binary accumulation and rounds half-up to a whole rupee", () => {
+  const fractional = buildExactOrderFinancialSnapshot({
+    items: [{ id: "1", qty: 3, price: "0.10" }],
+    gstPercent: "0",
+    deliveryCharge: "0"
+  });
+  const halfRupeeTax = buildExactOrderFinancialSnapshot({
+    items: [{ id: "2", qty: 1, price: "10.00" }],
+    gstPercent: "5",
+    deliveryCharge: "0"
+  });
+
+  assert.equal(fractional.totals.subtotal, 0.3);
+  assert.equal(fractional.totals.total, 0.3);
+  assert.equal(halfRupeeTax.totals.gst, 1);
+  assert.equal(halfRupeeTax.totals.total, 11);
+});
+
+test("order idempotency keys distinguish missing, invalid, and valid values", () => {
+  assert.deepEqual(getOrderIdempotencyKey({ headers: {} }), {
+    key: null,
+    error: "Idempotency-Key is required"
+  });
+  assert.match(getOrderIdempotencyKey({ headers: { "idempotency-key": "bad key" } }).error, /safe characters/);
+  assert.deepEqual(getOrderIdempotencyKey({ headers: { "idempotency-key": "order:request-123" } }), {
+    key: "order:request-123",
+    error: null
+  });
+});
+
+test("atomic order RPC adapter preserves direct and PostgREST-wrapped results", async () => {
+  const payload = { created: true, idempotent: false, order: { id: 42 } };
+  assert.deepEqual(normalizeTask6OrderAtomicResult(payload), payload);
+  assert.deepEqual(
+    normalizeTask6OrderAtomicResult([{ task6_create_order_atomic: payload }]),
+    payload
+  );
+  assert.equal(normalizeTask6OrderAtomicResult([]), null);
+
+  const calls = [];
+  const databaseClient = {
+    async rpc(name, args) {
+      calls.push({ name, args });
+      return { data: [{ task6_create_order_atomic: payload }], error: null };
+    }
+  };
+  const result = await executeTask6OrderAtomic({
+    databaseClient,
+    operationScope: ORDER_CREATION_SCOPES.PUBLIC,
+    idempotencyKey: "order:request-123",
+    requestFingerprint: "a".repeat(64),
+    order: { hotel_slug: "hotel-a" }
+  });
+
+  assert.deepEqual(result, { data: payload, error: null });
+  assert.deepEqual(calls, [{
+    name: "task6_create_order_atomic",
+    args: {
+      p_operation_scope: ORDER_CREATION_SCOPES.PUBLIC,
+      p_idempotency_key: "order:request-123",
+      p_request_fingerprint: "a".repeat(64),
+      p_order: { hotel_slug: "hotel-a" }
+    }
+  }]);
+});
+
+test("atomic order errors are classified without leaking database details", () => {
+  assert.equal(isMissingTask6OrderAtomicRpc({ code: "PGRST202" }), true);
+  assert.equal(
+    isTask6OrderIdempotencyConflict({ message: "TASK6_ORDER_IDEMPOTENCY_CONFLICT" }),
+    true
+  );
+  assert.equal(
+    isTask6OrderSnapshotInvalid({ details: "TASK6_ORDER_FINANCIAL_SNAPSHOT_INVALID" }),
+    true
+  );
+});
+
+test("TASK6-C RPC serializes retries and protects canonical financial snapshots", () => {
+  const migration = readBackend("scripts/task6-c-order-atomic-idempotency.sql");
+
+  assert.match(migration, /security invoker/i);
+  assert.match(migration, /set search_path = pg_catalog, public/i);
+  assert.match(migration, /pg_advisory_xact_lock/i);
+  assert.match(migration, /TASK6_ORDER_IDEMPOTENCY_CONFLICT/);
+  assert.match(migration, /task6_order_snapshot_valid/i);
+  assert.match(migration, /financial_snapshot_version[\s\S]*v_scope, v_key, v_fingerprint, 1/i);
+  assert.match(migration, /from public\.orders[\s\S]*for update/i);
+  assert.match(migration, /from public\.room_bookings[\s\S]*for update/i);
+  assert.match(migration, /get_staff_active_table_order/i);
+  assert.match(migration, /v_hotel\.tenant_id, v_hotel\.id/i);
+  assert.doesNotMatch(migration, /update\s+public\.orders/i);
+  assert.doesNotMatch(migration, /delete\s+from\s+public\.orders/i);
+});
+
+test("all targeted order-create routes use the atomic RPC and post-commit notifications", () => {
+  for (const relativePath of [
+    "routes/orders.js",
+    "routes/order-tracking.js",
+    "routes/staff.js"
+  ]) {
+    const source = readBackend(relativePath);
+    assert.match(source, /executeTask6OrderAtomic/);
+    assert.match(source, /ORDER_IDEMPOTENCY_CONFLICT/);
+    assert.match(source, /ORDER_FINANCIAL_SNAPSHOT_INVALID/);
+    assert.match(source, /atomicResult\.created === true[\s\S]*createNotificationEventSafely/);
+  }
+
+  const publicRoute = readBackend("routes/orders.js");
+  const addonRoute = readBackend("routes/order-tracking.js");
+  const staffRoute = readBackend("routes/staff.js");
+  assert.match(publicRoute, /ORDER_CREATION_SCOPES\.PUBLIC/);
+  assert.match(addonRoute, /ORDER_CREATION_SCOPES\.PUBLIC_ADDON/);
+  assert.match(staffRoute, /ORDER_CREATION_SCOPES\.STAFF_TABLE/);
+  assert.match(staffRoute, /ORDER_CREATION_SCOPES\.STAFF_ROOM_SERVICE/);
+});
+
+test("public order creation does not expose tenant or idempotency persistence metadata", () => {
+  const publicRoute = readBackend("routes/orders.js");
+  const presenterMatch = publicRoute.match(
+    /function buildPublicCreatedOrder\(order = \{\}\) \{([\s\S]*?)\n\}/
+  );
+
+  assert.ok(presenterMatch, "public order presenter must exist");
+  assert.doesNotMatch(presenterMatch[1], /tenant_id|property_id|creation_idempotency|creation_request_fingerprint/);
+  assert.match(publicRoute, /order: buildPublicCreatedOrder\(data\)/);
+  assert.doesNotMatch(publicRoute, /\n\s*order: data,/);
+});
+
+test("public and staff clients persist and send durable order operation keys", () => {
+  const publicClient = readWorkspace("frontend/js/main.js");
+  const staffClient = readWorkspace("frontend/js/staff-orders.js");
+
+  assert.match(publicClient, /getTask6OrderClientRequestId/);
+  assert.match(publicClient, /"Idempotency-Key": task6ClientRequestId/);
+  assert.match(staffClient, /roomServiceIdempotencyKey/);
+  assert.match(staffClient, /tableOrderIdempotencyKey/);
+  assert.match(staffClient, /"Idempotency-Key": idempotencyKey/);
+});
+
+test("tenant mutation allowlist includes only the named Task 6 order RPC", () => {
+  const source = readBackend("utils/tenant-mutation-client.js");
+  assert.match(source, /TENANT_RPCS[\s\S]*task6_create_order_atomic/);
+});
+
+test("live POS verifier is explicitly TEST-write gated and checks one logical result", () => {
+  const source = readBackend("scripts/verify-task6-pos-live.js");
+  assert.match(source, /TASK6_POS_TEST_WRITES_CONFIRMED/);
+  assert.match(source, /TASK6_POS_LIVE_ENV[\s\S]*TEST/);
+  assert.match(source, /Promise\.all\(/);
+  assert.match(source, /ids\.length !== 1/);
+  assert.match(source, /ORDER_IDEMPOTENCY_CONFLICT/);
+  assert.match(source, /CLIENT TAMPERED NAME/);
+  assert.match(source, /Cancel this synthetic unpaid order/);
+});
+

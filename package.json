@@ -99,6 +99,8 @@
     "seed:staging": "node scripts/seed-staging.js",
     "test:golden-pricing": "node scripts/verify-golden-pricing.js",
     "test:booking-transactional": "node --test tests/booking-transactional.test.js",
+    "test:pos-transactional": "node --test tests/pos-transactional.test.js",
+    "verify:task6-pos-live": "node scripts/verify-task6-pos-live.js",
     "verify:task6-booking-live": "node scripts/verify-task6-booking-live.js",
     "test:payment-hardening": "node --test tests/payment-hardening.test.js",
     "test:per-hotel-payment-gateway": "node --test tests/per-hotel-payment-gateway.test.js",

@@ -27,9 +27,19 @@ const {
   buildOrderItemSnapshots,
   buildComboSummaryLine
 } = require("../utils/order-item-snapshots");
+const { buildExactOrderFinancialSnapshot } = require("../utils/exact-money");
 const { validateRequestedMenuCombos } = require("../utils/menu-combos");
 const { filterEligibleMenuItems } = require("../utils/menu-categories");
 const { requireHotelFeature } = require("../middleware/require-hotel-feature");
+const {
+  ORDER_CREATION_SCOPES,
+  buildOrderCreationRequestFingerprint,
+  executeTask6OrderAtomic,
+  getOrderIdempotencyKey,
+  isMissingTask6OrderAtomicRpc,
+  isTask6OrderIdempotencyConflict,
+  isTask6OrderSnapshotInvalid
+} = require("../utils/order-idempotency");
 
 const router = express.Router();
 const TRACKING_ROUTE_WINDOW_MS = 10 * 60 * 1000;
@@ -346,38 +356,27 @@ async function calculateVerifiedAddonPricing({ hotelSlug, items, paymentMethod }
     };
   }
 
-  const verifiedItems = await buildOrderItemSnapshots({
+  const itemSnapshots = await buildOrderItemSnapshots({
     hotelSlug: hotel.hotel_slug,
     requestedItems: items || [],
     menuItemRows: Array.from(menuItemsById.values())
   });
-  const subtotal = verifiedItems.reduce((sum, item) => sum + item.lineTotal, 0);
   const gstPercent = Number(hotel.gst_percent || 5);
-  const gst = Math.round((subtotal * gstPercent) / 100);
-  const normalTotal = subtotal + gst;
   const upiDiscountPercent = getUpiDiscountPercent(hotel);
-  const gpayDiscount = Math.round((normalTotal * upiDiscountPercent) / 100);
-  const gpayFinalTotal = Math.max(0, normalTotal - gpayDiscount);
   const isUpi = isUpiPaymentMethod(paymentMethod);
-  const verifiedTotals = {
-    subtotal,
-    gst,
+  const exactSnapshot = buildExactOrderFinancialSnapshot({
+    items: itemSnapshots,
     gstPercent,
-    normalTotal,
+    deliveryCharge: 0,
     upiDiscountPercent,
-    total: normalTotal
-  };
-
-  if (isUpi) {
-    verifiedTotals.gpayDiscount = gpayDiscount;
-    verifiedTotals.gpayFinalTotal = gpayFinalTotal;
-    verifiedTotals.total = gpayFinalTotal;
-  }
+    includeUpiPolicy: true,
+    applyUpiDiscount: isUpi
+  });
 
   return {
     hotel,
-    items: verifiedItems,
-    totals: verifiedTotals
+    items: exactSnapshot.items,
+    totals: exactSnapshot.totals
   };
 }
 
@@ -913,6 +912,7 @@ router.post("/:hotelSlug/:orderId/add-items", requirePublicFoodModule, async (re
     const note = normalizePublicText(req.body?.note, 1000);
     const paymentMethod = normalizePublicText(req.body?.paymentMethod, 30) || "COD";
     const paymentConfirmed = req.body?.paymentConfirmed === true;
+    const idempotency = getOrderIdempotencyKey(req, req.body?.clientRequestId);
 
     if (!hotelSlug || !orderId || !token) {
       return res.status(400).json({
@@ -925,6 +925,15 @@ router.post("/:hotelSlug/:orderId/add-items", requirePublicFoodModule, async (re
       return res.status(400).json({
         success: false,
         message: "At least one add-on item is required"
+      });
+    }
+    if (idempotency.error) {
+      return res.status(400).json({
+        success: false,
+        code: idempotency.error === "Idempotency-Key is required"
+          ? "ORDER_IDEMPOTENCY_REQUIRED"
+          : "ORDER_IDEMPOTENCY_INVALID",
+        message: idempotency.error
       });
     }
 
@@ -1012,28 +1021,10 @@ router.post("/:hotelSlug/:orderId/add-items", requirePublicFoodModule, async (re
       });
     }
 
-    let addonSequence;
-
-    try {
-      addonSequence = await getNextAddonSequence({
-        hotelSlug: baseOrder.hotel_slug || hotelSlug,
-        parentOrderId: baseOrder.id
-      });
-    } catch (error) {
-      if (isMissingAddonMetadataColumnsError(error)) {
-        return res.status(503).json({
-          success: false,
-          message: "Order add-on metadata is not initialized yet"
-        });
-      }
-
-      throw error;
-    }
-
-    const sequenceLabel = getAddonSequenceLabel(baseOrder.id, addonSequence);
+    const pendingSequenceLabel = "__TASK6_ADDON_SEQUENCE_LABEL__";
     const approvedWhatsappMessage = buildAddonOrderSummary({
       baseOrder,
-      sequenceLabel,
+      sequenceLabel: pendingSequenceLabel,
       paymentMethod,
       paymentConfirmed,
       note,
@@ -1063,38 +1054,63 @@ router.post("/:hotelSlug/:orderId/add-items", requirePublicFoodModule, async (re
         : "unpaid",
       billing_status: "not_billed",
       parent_order_id: String(baseOrder.id),
-      order_group_id: baseOrder.order_group_id || String(baseOrder.id),
-      order_entry_type: "add_on",
-      order_sequence_label: sequenceLabel,
-      addon_sequence: addonSequence,
+      parent_tracking_token: token,
       ...getOrderTrackingColumns()
     };
+    const requestFingerprint = buildOrderCreationRequestFingerprint({
+      operationScope: ORDER_CREATION_SCOPES.PUBLIC_ADDON,
+      request: {
+        hotelSlug: baseOrder.hotel_slug || hotelSlug,
+        parentOrderId: String(baseOrder.id),
+        trackingToken: token,
+        paymentMethod,
+        paymentConfirmed,
+        note,
+        items: items.map((item) => ({ id: String(item.id || ""), qty: item.qty }))
+      }
+    });
+    const atomic = await executeTask6OrderAtomic({
+      databaseClient: database,
+      operationScope: ORDER_CREATION_SCOPES.PUBLIC_ADDON,
+      idempotencyKey: idempotency.key,
+      requestFingerprint,
+      order: insertPayload
+    });
 
-    const { data: addonOrder, error: addonOrderError } = await database
-      .from("orders")
-      .insert([insertPayload])
-      .select()
-      .single();
-
-    if (addonOrderError) {
-      if (isMissingAddonMetadataColumnsError(addonOrderError)) {
+    if (atomic.error) {
+      if (isMissingTask6OrderAtomicRpc(atomic.error)) {
         return res.status(503).json({
           success: false,
-          message: "Order add-on metadata is not initialized yet"
+          code: "TASK6_ORDER_ATOMIC_CREATE_NOT_READY",
+          message: "Atomic add-on creation is not initialized yet"
         });
       }
-
-      if (isMissingOrderTrackingColumnsError(addonOrderError)) {
-        return res.status(503).json({
+      if (isTask6OrderIdempotencyConflict(atomic.error)) {
+        return res.status(409).json({
           success: false,
-          message: "Order tracking is not initialized yet"
+          code: "ORDER_IDEMPOTENCY_CONFLICT",
+          message: "This add-on request key was already used for different details"
         });
       }
-
-      throw addonOrderError;
+      if (isTask6OrderSnapshotInvalid(atomic.error)) {
+        return res.status(500).json({
+          success: false,
+          code: "ORDER_FINANCIAL_SNAPSHOT_INVALID",
+          message: "The server could not validate the final add-on total"
+        });
+      }
+      throw atomic.error;
     }
 
-    void createNotificationEventSafely({
+    const atomicResult = atomic.data;
+    const addonOrder = atomicResult?.order || null;
+    if (!addonOrder) {
+      throw new Error("TASK6_ORDER_ATOMIC_RESULT_INVALID");
+    }
+    const addonSequence = Number(addonOrder.addon_sequence || 0);
+    const sequenceLabel = String(addonOrder.order_sequence_label || "").trim();
+
+    if (atomicResult.created === true) void createNotificationEventSafely({
       databaseClient: database,
       tenantId: scope?.tenantId,
       propertyId: scope?.propertyId,
@@ -1125,17 +1141,21 @@ router.post("/:hotelSlug/:orderId/add-items", requirePublicFoodModule, async (re
       }
     });
 
+    const finalWhatsappMessage = addonOrder.whatsapp_message || approvedWhatsappMessage;
     const ownerWhatsAppNumber = await getOwnerWhatsAppNumber(addonOrder.hotel_slug || hotelSlug);
-    const ownerWhatsappLink = buildWhatsAppLink(ownerWhatsAppNumber, approvedWhatsappMessage);
+    const ownerWhatsappLink = buildWhatsAppLink(ownerWhatsAppNumber, finalWhatsappMessage);
     const tracking = buildOrderTrackingReference(addonOrder);
 
-    res.status(201).json({
+    res.status(atomicResult.idempotent === true ? 200 : 201).json({
       success: true,
-      message: "Add-on order saved",
+      idempotent: atomicResult.idempotent === true,
+      message: atomicResult.idempotent === true
+        ? "This add-on request was already completed"
+        : "Add-on order saved",
       order: buildPublicTrackingOrder(addonOrder),
       tracking,
       trackingReady: !!tracking,
-      preview: approvedWhatsappMessage,
+      preview: finalWhatsappMessage,
       ownerWhatsappLink,
       whatsappLinkReady: !!ownerWhatsappLink,
       addon: {
