@@ -316,6 +316,12 @@ function getReadinessChecks() {
       sessionSecurityReady,
       "session_security_requires_restricted_database_strong_secrets_and_valid_ttls",
       sessionSecurityEnabled
+    ),
+    buildReadinessCheck(
+      "task6_room_checkout_finalizer",
+      !env.task6RoomCheckoutFinalizerEnabled || env.roomCombinedCheckoutEnabled,
+      "task6_checkout_finalizer_requires_combined_checkout",
+      env.task6RoomCheckoutFinalizerEnabled
     )
   ];
 }

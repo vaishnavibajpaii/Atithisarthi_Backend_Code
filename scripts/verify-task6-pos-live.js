@@ -80,16 +80,19 @@ async function selectMenuItem(inputs) {
     fail("TASK6_POS_MENU_FAILED", "Could not read the TEST public menu", response);
   }
 
-  const items = Object.values(response.body?.menu || {})
+  const positivePriceItems = Object.values(response.body?.menu || {})
     .flat()
     .filter((item) => item?.id && Number.isFinite(Number(item?.price)) && Number(item.price) > 0);
+  const items = positivePriceItems.filter(
+    (item) => String(item?.itemType || "single").trim().toLowerCase() !== "combo"
+  );
   const selected = inputs.requestedItemId
-    ? items.find((item) => String(item.id) === inputs.requestedItemId)
+    ? positivePriceItems.find((item) => String(item.id) === inputs.requestedItemId)
     : items[0];
   if (!selected) {
     fail(
       "TASK6_POS_NO_MENU_ITEM",
-      "No positive-price eligible TEST menu item was found; optionally set TASK6_POS_MENU_ITEM_ID"
+      "No positive-price eligible non-combo TEST menu item was found; optionally set TASK6_POS_MENU_ITEM_ID to a currently active item"
     );
   }
   return selected;
@@ -117,10 +120,18 @@ function isCreated(response) {
 }
 
 function safeResponse(response) {
+  const validationDetails = Array.isArray(response?.body?.details)
+    ? response.body.details.slice(0, 5).map((detail) => ({
+        path: Array.isArray(detail?.path) ? detail.path.map(String) : [],
+        message: String(detail?.message || "").slice(0, 240)
+      }))
+    : undefined;
   return {
     status: response?.status || 0,
     success: response?.body?.success === true,
     code: response?.body?.code || null,
+    message: String(response?.body?.message || "").slice(0, 240) || null,
+    ...(validationDetails?.length ? { validationDetails } : {}),
     idempotent: response?.body?.idempotent === true,
     orderId: orderId(response)
   };

@@ -28,14 +28,15 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function runProductionVerifier({ backendEnabled, frontendEnabled }) {
+function runProductionVerifier({ backendEnabled, frontendEnabled, task6FinalizerEnabled = "false" }) {
   const result = spawnSync(process.execPath, [productionVerifierPath], {
     cwd: backendRoot,
     env: {
       ...process.env,
       ...baseProductionEnv,
       ROOM_COMBINED_CHECKOUT_ENABLED: backendEnabled,
-      APP_ROOM_COMBINED_CHECKOUT_FRONTEND_ENABLED: frontendEnabled
+      APP_ROOM_COMBINED_CHECKOUT_FRONTEND_ENABLED: frontendEnabled,
+      TASK6_ROOM_CHECKOUT_FINALIZER_ENABLED: task6FinalizerEnabled
     },
     encoding: "utf8"
   });
@@ -70,12 +71,21 @@ function main() {
     "APP_ROOM_COMBINED_CHECKOUT_FRONTEND_ENABLED is false. Admin/staff combined checkout buttons will remain disabled.";
   const frontendEnabledWarning =
     "APP_ROOM_COMBINED_CHECKOUT_FRONTEND_ENABLED is true. Confirm production enablement was separately approved after staging checkout verification.";
+  const legacyFinalizerWarning =
+    "TASK6_ROOM_CHECKOUT_FINALIZER_ENABLED is false or missing. Legacy combined checkout settlement remains selected.";
+  const atomicFinalizerWarning =
+    "TASK6_ROOM_CHECKOUT_FINALIZER_ENABLED is true. Confirm the D-B migration, checkout concurrency probe, and TEST business-flow acceptance passed before production use.";
+  const atomicRequiresBackendBlocker =
+    "TASK6_ROOM_CHECKOUT_FINALIZER_ENABLED cannot be true unless ROOM_COMBINED_CHECKOUT_ENABLED is also true.";
+  const frontendRequiresAtomicBlocker =
+    "APP_ROOM_COMBINED_CHECKOUT_FRONTEND_ENABLED cannot be true until TASK6_ROOM_CHECKOUT_FINALIZER_ENABLED is true.";
 
   const disabled = runProductionVerifier({
     backendEnabled: "false",
     frontendEnabled: "false"
   });
   assertIncludes(disabled, backendDisabledWarning, "disabled flags");
+  assertExcludes(disabled, legacyFinalizerWarning, "disabled flags");
   assertExcludes(disabled, mismatchBlocker, "disabled flags");
 
   const unsafeFrontendOnly = runProductionVerifier({
@@ -84,6 +94,7 @@ function main() {
   });
   assertIncludes(unsafeFrontendOnly, mismatchBlocker, "frontend-only flag");
   assertIncludes(unsafeFrontendOnly, backendDisabledWarning, "frontend-only flag");
+  assertIncludes(unsafeFrontendOnly, frontendRequiresAtomicBlocker, "frontend-only flag");
 
   const backendOnly = runProductionVerifier({
     backendEnabled: "true",
@@ -91,6 +102,7 @@ function main() {
   });
   assertIncludes(backendOnly, backendEnabledWarning, "backend-only flag");
   assertIncludes(backendOnly, frontendDisabledWarning, "backend-only flag");
+  assertIncludes(backendOnly, legacyFinalizerWarning, "backend-only flag");
   assertExcludes(backendOnly, mismatchBlocker, "backend-only flag");
 
   const bothEnabled = runProductionVerifier({
@@ -98,11 +110,37 @@ function main() {
     frontendEnabled: "true"
   });
   assertIncludes(bothEnabled, backendEnabledWarning, "both flags");
-  assertIncludes(bothEnabled, frontendEnabledWarning, "both flags");
+  assertIncludes(bothEnabled, frontendRequiresAtomicBlocker, "both flags without atomic finalizer");
+  assertExcludes(bothEnabled, frontendEnabledWarning, "both flags without atomic finalizer");
   assertExcludes(bothEnabled, mismatchBlocker, "both flags");
 
-  console.log("Combined checkout production flag matrix verification passed.");
-  console.log("Verified disabled, frontend-only blocked, backend-only guarded, and both-enabled approval warnings.");
+  const atomicBackendOnly = runProductionVerifier({
+    backendEnabled: "true",
+    frontendEnabled: "false",
+    task6FinalizerEnabled: "true"
+  });
+  assertIncludes(atomicBackendOnly, atomicFinalizerWarning, "atomic backend-only flag");
+  assertIncludes(atomicBackendOnly, frontendDisabledWarning, "atomic backend-only flag");
+  assertExcludes(atomicBackendOnly, atomicRequiresBackendBlocker, "atomic backend-only flag");
+
+  const atomicWithoutBase = runProductionVerifier({
+    backendEnabled: "false",
+    frontendEnabled: "false",
+    task6FinalizerEnabled: "true"
+  });
+  assertIncludes(atomicWithoutBase, atomicRequiresBackendBlocker, "atomic-only flag");
+
+  const allEnabled = runProductionVerifier({
+    backendEnabled: "true",
+    frontendEnabled: "true",
+    task6FinalizerEnabled: "true"
+  });
+  assertIncludes(allEnabled, frontendEnabledWarning, "all flags enabled");
+  assertIncludes(allEnabled, atomicFinalizerWarning, "all flags enabled");
+  assertExcludes(allEnabled, frontendRequiresAtomicBlocker, "all flags enabled");
+
+console.log("Combined checkout production flag matrix verification passed.");
+console.log("Verified default-off, legacy selection warning, atomic-finalizer dependency, and TEST-acceptance warning across the production flag matrix.");
 }
 
 main();

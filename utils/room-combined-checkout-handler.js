@@ -1,6 +1,7 @@
 "use strict";
 
 const { settleRoomCombinedCheckout } = require("./room-combined-checkout");
+const { settleTask6RoomCheckout } = require("./task6-room-checkout-finalizer");
 const { getCheckoutBill, isMissingBillSchemaError } = require("./room-checkout-bill");
 
 const ADMIN_SCOPE_SCHEMA_ERROR_CODES = new Set([
@@ -143,7 +144,9 @@ function createRoomCombinedCheckoutHandler({
   supabaseClient,
   resolveDatabaseClient = null,
   resolveRequestContext,
-  settleCheckout = settleRoomCombinedCheckout
+  settleCheckout = settleRoomCombinedCheckout,
+  settleAtomicCheckout = settleTask6RoomCheckout,
+  useAtomicFinalizer = () => false
 } = {}) {
   if (
     typeof resolveDatabaseClient !== "function" &&
@@ -158,6 +161,12 @@ function createRoomCombinedCheckoutHandler({
 
   if (typeof settleCheckout !== "function") {
     throw new TypeError("Combined checkout settlement function is required");
+  }
+  if (typeof settleAtomicCheckout !== "function") {
+    throw new TypeError("Atomic checkout settlement function is required");
+  }
+  if (typeof useAtomicFinalizer !== "function") {
+    throw new TypeError("Atomic checkout feature resolver is required");
   }
 
   return async function roomCombinedCheckoutHandler(req, res) {
@@ -189,7 +198,12 @@ function createRoomCombinedCheckoutHandler({
       }
 
       const body = req.validatedBody || {};
-      const result = await settleCheckout({
+      const settle = useAtomicFinalizer() ? settleAtomicCheckout : settleCheckout;
+      const actorDisplayName =
+        req.staffUser?.displayName ||
+        req.adminUser?.fullName ||
+        context.actorRole;
+      const result = await settle({
         supabaseClient: databaseClient,
         hotelSlug: context.hotelSlug,
         bookingId: req.params?.id,
@@ -200,7 +214,8 @@ function createRoomCombinedCheckoutHandler({
         idempotencyKey: body.idempotencyKey,
         currency: body.currency || "INR",
         actorUserId: context.actorUserId,
-        actorRole: context.actorRole
+        actorRole: context.actorRole,
+        actorDisplayName
       });
 
       if (!result.ok) {
@@ -209,8 +224,8 @@ function createRoomCombinedCheckoutHandler({
           .json(buildCheckoutErrorPayload(result));
       }
 
-      let checkoutBill = null;
-      if (typeof databaseClient.from === "function") {
+      let checkoutBill = result.checkoutBill || null;
+      if (!checkoutBill && typeof databaseClient.from === "function") {
         try {
           const billResult = await getCheckoutBill({
             supabaseClient: databaseClient,
@@ -219,10 +234,7 @@ function createRoomCombinedCheckoutHandler({
             actor: {
               id: context.actorUserId,
               role: context.actorRole,
-              displayName:
-                req.staffUser?.displayName ||
-                req.adminUser?.fullName ||
-                context.actorRole
+              displayName: actorDisplayName
             },
             issueFinal: true
           });
@@ -240,6 +252,7 @@ function createRoomCombinedCheckoutHandler({
           ? "Combined checkout was already completed"
           : "Combined checkout completed",
         idempotentReplay: result.idempotentReplay,
+        atomicFinalizer: result.atomicFinalizer === true,
         checkoutBill,
         receipt: result.receipt,
         booking: result.booking,

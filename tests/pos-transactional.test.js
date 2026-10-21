@@ -242,6 +242,7 @@ test("live POS verifier is explicitly TEST-write gated and checks one logical re
   assert.match(source, /ids\.length !== 1/);
   assert.match(source, /ORDER_IDEMPOTENCY_CONFLICT/);
   assert.match(source, /CLIENT TAMPERED NAME/);
+  assert.match(source, /itemType[\s\S]*combo/);
   assert.match(source, /Cancel this synthetic unpaid order/);
 });
 

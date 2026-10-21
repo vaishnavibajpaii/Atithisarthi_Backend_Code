@@ -97,6 +97,7 @@ const requireStaffCombinedBilling = requireHotelFeature("combined_billing", {
 const staffRoomCombinedCheckoutHandler =
   createRoomCombinedCheckoutHandler({
     supabaseClient: supabase,
+    useAtomicFinalizer: () => env.task6RoomCheckoutFinalizerEnabled,
     resolveDatabaseClient: (req) => (
       req.tenantMutationDatabase ||
       getStaffTenantMutationClient(req, supabase)

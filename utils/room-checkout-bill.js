@@ -803,6 +803,127 @@ async function buildLiveBill(source, actor = {}) {
   return bill;
 }
 
+function buildFinalCheckoutPreviewSource(source, {
+  actor = {},
+  paymentMethod,
+  transactionId = null,
+  currency = "INR",
+  issuedAt
+} = {}) {
+  const originalSummary = source.summary;
+  const roomDue = roundMoney(originalSummary.roomCharges.balanceAmount || 0);
+  const booking = {
+    ...source.booking,
+    advance_paid: source.booking.total_amount,
+    balance_amount: 0,
+    payment_status: "paid",
+    booking_status: "checked_out",
+    checked_out_at: issuedAt
+  };
+  const orders = source.orders.map((order) => {
+    const status = String(order.status || "new").trim().toLowerCase();
+    const paymentStatus = String(order.payment_status || "unpaid").trim().toLowerCase();
+    const settlesWithRoom = order.room_service_charge_to_room === true &&
+      !["cancelled", "payment_failed"].includes(status) &&
+      !["paid", "refunded"].includes(paymentStatus);
+
+    return settlesWithRoom
+      ? { ...order, payment_status: "paid", billing_status: "billed" }
+      : order;
+  });
+  const summary = buildRoomCheckoutSummary({
+    booking,
+    room: source.room,
+    foodOrders: orders
+  });
+  summary.foodCharges.orders = summary.foodCharges.orders.map((order, index) => ({
+    ...order,
+    source: orders[index] || {}
+  }));
+
+  const payments = [...source.payments];
+  if (roomDue > 0) {
+    payments.push({
+      hotel_slug: source.booking.hotel_slug,
+      booking_id: source.booking.id,
+      amount: roomDue,
+      payment_method: paymentMethod,
+      payment_status: "paid",
+      transaction_id: transactionId,
+      paid_at: issuedAt,
+      created_at: issuedAt
+    });
+  }
+
+  const receipt = {
+    ...(source.receipt || {}),
+    hotel_slug: source.booking.hotel_slug,
+    booking_id: source.booking.id,
+    amount: roundMoney(originalSummary.totals.finalPayableAmount || 0),
+    room_amount: roomDue,
+    food_amount: roundMoney(originalSummary.foodCharges.outstandingChargeToRoomAmount || 0),
+    currency: String(currency || "INR").trim().toUpperCase(),
+    payment_method: String(paymentMethod || "").trim(),
+    payment_status: "paid",
+    transaction_id: transactionId,
+    paid_at: issuedAt,
+    created_by_user_id: actor.id || null,
+    created_by_role: actor.role || ""
+  };
+
+  return {
+    ...source,
+    booking,
+    orders,
+    payments,
+    receipt,
+    summary
+  };
+}
+
+async function buildFinalCheckoutSnapshotCandidate({
+  supabaseClient,
+  hotelSlug,
+  bookingId,
+  actor = {},
+  paymentMethod,
+  transactionId = null,
+  currency = "INR",
+  issuedAt = new Date().toISOString()
+} = {}) {
+  const source = await loadBillSource({ supabaseClient, hotelSlug, bookingId });
+  if (!source) return null;
+
+  const issuedAtIso = new Date(issuedAt).toISOString();
+  const finalSource = buildFinalCheckoutPreviewSource(source, {
+    actor,
+    paymentMethod,
+    transactionId,
+    currency,
+    issuedAt: issuedAtIso
+  });
+  const bill = await buildLiveBill(finalSource, actor);
+  if (
+    bill.provisional !== false ||
+    bill.documentType !== "guest_folio" ||
+    bill.checkoutStatus !== "checked_out" ||
+    bill.paymentStatus !== "paid" ||
+    !bill.folioNumber ||
+    !bill.issuedAt ||
+    !Number.isFinite(Number(bill.totals?.grandTotal)) ||
+    Number(bill.totals?.paid) !== Number(bill.totals?.grandTotal) ||
+    Number(bill.totals?.balance) !== 0
+  ) {
+    throw new Error("TASK6_CHECKOUT_FINAL_SNAPSHOT_INVALID");
+  }
+
+  return {
+    bill,
+    payloadHash: buildPayloadHash(bill),
+    source: finalSource
+  };
+}
+
 async function fetchSnapshot(supabaseClient, hotelSlug, bookingId) {
   const { data, error } = await supabaseClient
     .from("room_checkout_bill_snapshots")
@@ -1006,12 +1127,15 @@ async function reprintCheckoutBill({
 
 module.exports = {
   buildDefaultBillFormat,
+  buildFinalCheckoutSnapshotCandidate,
   buildFormatRow,
   buildLiveBill,
+  buildPayloadHash,
   getBillFormat,
   getCheckoutBill,
   isMissingBillSchemaError,
   mapBillFormatRow,
+  mapSnapshotBill,
   reprintCheckoutBill,
   resetBillFormat,
   saveBillFormat,

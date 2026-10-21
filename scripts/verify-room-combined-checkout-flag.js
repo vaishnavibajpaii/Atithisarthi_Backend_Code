@@ -28,6 +28,10 @@ function main() {
     /roomCombinedCheckoutEnabled:\s*\n?\s*getEnv\("ROOM_COMBINED_CHECKOUT_ENABLED",\s*"false"\)\s*===\s*"true"/
   );
   assert.match(
+    envConfig,
+    /task6RoomCheckoutFinalizerEnabled:\s*\n?\s*getEnv\("TASK6_ROOM_CHECKOUT_FINALIZER_ENABLED",\s*"false"\)\s*===\s*"true"/
+  );
+  assert.match(
     productionVerifier,
     /function checkRoomCombinedCheckoutEnv\(issues,\s*warnings\)/
   );
@@ -38,6 +42,14 @@ function main() {
   assert.match(
     productionVerifier,
     /APP_ROOM_COMBINED_CHECKOUT_FRONTEND_ENABLED cannot be true unless ROOM_COMBINED_CHECKOUT_ENABLED is also true/
+  );
+  assert.match(
+    productionVerifier,
+    /TASK6_ROOM_CHECKOUT_FINALIZER_ENABLED cannot be true unless ROOM_COMBINED_CHECKOUT_ENABLED is also true/
+  );
+  assert.match(
+    productionVerifier,
+    /APP_ROOM_COMBINED_CHECKOUT_FRONTEND_ENABLED cannot be true until TASK6_ROOM_CHECKOUT_FINALIZER_ENABLED is true/
   );
   assert.match(
     productionVerifier,
@@ -86,6 +98,11 @@ function main() {
       source,
       /^APP_ROOM_COMBINED_CHECKOUT_FRONTEND_ENABLED=false$/m,
       `${relativePath} must default frontend combined checkout to false`
+    );
+    assert.match(
+      source,
+      /^TASK6_ROOM_CHECKOUT_FINALIZER_ENABLED=false$/m,
+      `${relativePath} must default the Task 6 finalizer to false`
     );
   });
 

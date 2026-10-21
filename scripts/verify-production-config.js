@@ -300,6 +300,9 @@ function checkRoomCombinedCheckoutEnv(issues, warnings) {
   const rawFrontendValue = String(
     getEnv("APP_ROOM_COMBINED_CHECKOUT_FRONTEND_ENABLED", "false")
   ).trim().toLowerCase();
+  const rawTask6FinalizerValue = String(
+    getEnv("TASK6_ROOM_CHECKOUT_FINALIZER_ENABLED", "false")
+  ).trim().toLowerCase();
 
   if (rawBackendValue && !isExplicitBooleanText(rawBackendValue)) {
     addIssue(
@@ -315,10 +318,31 @@ function checkRoomCombinedCheckoutEnv(issues, warnings) {
     );
   }
 
+  if (!isExplicitBooleanText(rawTask6FinalizerValue)) {
+    addIssue(
+      issues,
+      "TASK6_ROOM_CHECKOUT_FINALIZER_ENABLED must be true or false for production."
+    );
+  }
+
   if (rawFrontendValue === "true" && rawBackendValue !== "true") {
     addIssue(
       issues,
       "APP_ROOM_COMBINED_CHECKOUT_FRONTEND_ENABLED cannot be true unless ROOM_COMBINED_CHECKOUT_ENABLED is also true."
+    );
+  }
+
+  if (rawTask6FinalizerValue === "true" && rawBackendValue !== "true") {
+    addIssue(
+      issues,
+      "TASK6_ROOM_CHECKOUT_FINALIZER_ENABLED cannot be true unless ROOM_COMBINED_CHECKOUT_ENABLED is also true."
+    );
+  }
+
+  if (rawFrontendValue === "true" && rawTask6FinalizerValue !== "true") {
+    addIssue(
+      issues,
+      "APP_ROOM_COMBINED_CHECKOUT_FRONTEND_ENABLED cannot be true until TASK6_ROOM_CHECKOUT_FINALIZER_ENABLED is true."
     );
   }
 
@@ -328,6 +352,18 @@ function checkRoomCombinedCheckoutEnv(issues, warnings) {
       "ROOM_COMBINED_CHECKOUT_ENABLED is false or missing. Atomic combined checkout will stay disabled."
     );
     return;
+  }
+
+  if (rawTask6FinalizerValue !== "true") {
+    addWarning(
+      warnings,
+      "TASK6_ROOM_CHECKOUT_FINALIZER_ENABLED is false or missing. Legacy combined checkout settlement remains selected."
+    );
+  } else {
+    addWarning(
+      warnings,
+      "TASK6_ROOM_CHECKOUT_FINALIZER_ENABLED is true. Confirm the D-B migration, checkout concurrency probe, and TEST business-flow acceptance passed before production use."
+    );
   }
 
   addWarning(
@@ -340,6 +376,10 @@ function checkRoomCombinedCheckoutEnv(issues, warnings) {
       warnings,
       "APP_ROOM_COMBINED_CHECKOUT_FRONTEND_ENABLED is false. Admin/staff combined checkout buttons will remain disabled."
     );
+    return;
+  }
+
+  if (rawTask6FinalizerValue !== "true") {
     return;
   }
 
@@ -638,6 +678,9 @@ function run() {
   console.log(`PAYMENT_GATEWAY_ENABLED: ${getEnv("PAYMENT_GATEWAY_ENABLED", "false")}`);
   console.log(
     `ROOM_COMBINED_CHECKOUT_ENABLED: ${getEnv("ROOM_COMBINED_CHECKOUT_ENABLED", "false")}`
+  );
+  console.log(
+    `TASK6_ROOM_CHECKOUT_FINALIZER_ENABLED: ${getEnv("TASK6_ROOM_CHECKOUT_FINALIZER_ENABLED", "false")}`
   );
   console.log(`RAZORPAY_KEY_ID: ${maskValue(getEnv("RAZORPAY_KEY_ID"))}`);
   console.log("");

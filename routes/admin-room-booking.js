@@ -115,6 +115,7 @@ const requireAdminCombinedBilling = requireHotelFeature("combined_billing", {
 const adminRoomCombinedCheckoutHandler =
   createRoomCombinedCheckoutHandler({
     supabaseClient: supabase,
+    useAtomicFinalizer: () => env.task6RoomCheckoutFinalizerEnabled,
     resolveRequestContext: createAdminCombinedCheckoutContextResolver({
       supabaseClient: supabase
     })
