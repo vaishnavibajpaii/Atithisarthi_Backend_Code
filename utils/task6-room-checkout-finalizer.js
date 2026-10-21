@@ -154,6 +154,23 @@ function buildTask6RoomCheckoutRpcParams({
   };
 }
 
+function normalizeTask6CheckoutRpcData(value) {
+  let data = value;
+  if (Array.isArray(data)) {
+    if (data.length !== 1) return null;
+    data = data[0];
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+
+  // The tenant mutation RPC client runs SELECT * FROM public.<function>(...).
+  // PostgreSQL names the resulting scalar column after the function, so its
+  // single row is { task6_finalize_room_checkout: <jsonb result> }.
+  if (Object.prototype.hasOwnProperty.call(data, TASK6_CHECKOUT_RPC_NAME)) {
+    data = data[TASK6_CHECKOUT_RPC_NAME];
+  }
+  return data && typeof data === "object" && !Array.isArray(data) ? data : null;
+}
+
 function mapTask6CheckoutFinalizerError(error = {}) {
   const code = String(error.code || "").trim().toUpperCase();
   const message = String(error.message || "").trim();
@@ -317,8 +334,10 @@ async function settleTask6RoomCheckout({ supabaseClient, ...checkoutContext } = 
     payloadHash: candidate.payloadHash,
     requestFingerprint
   });
-  const { data, error } = await supabaseClient.rpc(TASK6_CHECKOUT_RPC_NAME, params);
+  const { data: rawData, error } = await supabaseClient.rpc(TASK6_CHECKOUT_RPC_NAME, params);
   if (error) return mapTask6CheckoutFinalizerError(error);
+
+  const data = normalizeTask6CheckoutRpcData(rawData);
 
   if (
     !data || typeof data !== "object" ||
