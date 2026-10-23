@@ -19,6 +19,13 @@ const {
   buildExactOrderFinancialSnapshot,
   decimalToScaledInteger
 } = require("../utils/exact-money");
+const {
+  TASK6_POS_BILLING_SCOPES,
+  buildTask6PosBillingRequestFingerprint,
+  mapTask6PosBillingFinalizerError,
+  normalizeTask6PosBillingRpcData
+} = require("../utils/task6-pos-billing-finalizer");
+const { buildTask6FoodBillNumber } = require("../utils/food-order-bill");
 
 const backendRoot = path.resolve(__dirname, "..");
 const workspaceRoot = path.resolve(backendRoot, "..");
@@ -244,5 +251,70 @@ test("live POS verifier is explicitly TEST-write gated and checks one logical re
   assert.match(source, /CLIENT TAMPERED NAME/);
   assert.match(source, /itemType[\s\S]*combo/);
   assert.match(source, /Cancel this synthetic unpaid order/);
+});
+
+test("Task 6 POS billing finalizer preserves the billing intent across retries", () => {
+  const original = buildTask6PosBillingRequestFingerprint({
+    hotelSlug: "hotel-a",
+    orderId: "42",
+    finalizeScope: TASK6_POS_BILLING_SCOPES.SINGLE
+  });
+  const replay = buildTask6PosBillingRequestFingerprint({
+    orderId: 42,
+    finalizeScope: "single_bill",
+    hotelSlug: "hotel-a"
+  });
+  const changed = buildTask6PosBillingRequestFingerprint({
+    hotelSlug: "hotel-a",
+    orderId: "42",
+    finalizeScope: TASK6_POS_BILLING_SCOPES.FAMILY
+  });
+
+  assert.match(original, /^[a-f0-9]{64}$/);
+  assert.equal(replay, original);
+  assert.notEqual(changed, original);
+  assert.equal(
+    buildTask6FoodBillNumber({ hotel_slug: "hotel-a", id: 42 }, "2026-10-23T11:00:00.000Z"),
+    "BILL-HOTEL-A-20261023-42"
+  );
+});
+
+test("Task 6 POS billing adapter accepts only a scalar RPC result and maps conflicts safely", () => {
+  const payload = { idempotentReplay: false, orders: [{ id: 42 }], snapshots: [{ id: 7 }] };
+  assert.deepEqual(normalizeTask6PosBillingRpcData(payload), payload);
+  assert.deepEqual(
+    normalizeTask6PosBillingRpcData([{ task6_finalize_order_family: payload }]),
+    payload
+  );
+  assert.equal(normalizeTask6PosBillingRpcData([]), null);
+
+  assert.equal(
+    mapTask6PosBillingFinalizerError({ message: "TASK6_ORDER_BILL_IDEMPOTENCY_CONFLICT" }).code,
+    "ORDER_BILLING_IDEMPOTENCY_CONFLICT"
+  );
+  assert.equal(
+    mapTask6PosBillingFinalizerError({ message: "TASK6_ORDER_BILL_FINANCIAL_SNAPSHOT_NOT_FINALIZABLE" }).status,
+    409
+  );
+});
+
+test("Task 6 POS billing is feature-gated and leaves gateway payment finality outside the bill finalizer", () => {
+  const envSource = readBackend("config/env.js");
+  const serverSource = readBackend("server.js");
+  const staffRoute = readBackend("routes/staff.js");
+  const mutationClient = readBackend("utils/tenant-mutation-client.js");
+  const billingMigration = readBackend("scripts/task6-e-a-pos-billing-finalizer.sql");
+  const staffClient = readWorkspace("frontend/js/staff-orders.js");
+
+  assert.match(envSource, /TASK6_POS_BILLING_FINALIZER_ENABLED",\s*"false"\)\s*===\s*"true"/);
+  assert.match(serverSource, /"task6_pos_billing_finalizer"[\s\S]*?env\.task6PosBillingFinalizerEnabled/);
+  assert.match(staffRoute, /task6PosBillingFinalizerEnabled[\s\S]*?TASK6_POS_BILLING_SCOPES\.SINGLE/);
+  assert.match(staffRoute, /task6PosBillingFinalizerEnabled[\s\S]*?TASK6_POS_BILLING_SCOPES\.FAMILY/);
+  assert.match(staffRoute, /ORDER_BILLING_IDEMPOTENCY_REQUIRED/);
+  assert.match(mutationClient, /TENANT_RPCS[\s\S]*task6_finalize_order_family/);
+  assert.match(staffClient, /getStaffFinancialActionIdempotencyKey/);
+  assert.match(staffClient, /"Idempotency-Key": idempotencyKey/);
+  assert.match(billingMigration, /Provider payment finality remains Task 2 controlled/i);
+  assert.doesNotMatch(billingMigration, /razorpay.*api|fetch\s*\(/i);
 });
 

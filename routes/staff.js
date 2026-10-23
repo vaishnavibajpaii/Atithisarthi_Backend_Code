@@ -129,6 +129,10 @@ const {
 const { resolveTableForOrder } = require("../utils/restaurant-tables");
 const { issueFoodBillSnapshotIfFinal } = require("../utils/food-order-bill");
 const {
+  TASK6_POS_BILLING_SCOPES,
+  finalizeTask6PosBilling
+} = require("../utils/task6-pos-billing-finalizer");
+const {
   DEFAULT_STAFF_REPORT_TIME_ZONE,
   addCalendarDays,
   buildStaffOrderTrend,
@@ -704,6 +708,91 @@ async function updateStaffOrderFamilyRecords({
   }
 
   return updatedOrders;
+}
+
+async function respondWithTask6AtomicStaffBilling({
+  req,
+  res,
+  hotelSlug,
+  orderId,
+  finalizeScope
+}) {
+  if (!env.tenantRuntimeWritesEnabled) {
+    return res.status(503).json({
+      success: false,
+      code: "TASK6_POS_BILLING_RUNTIME_NOT_READY",
+      message: "Atomic POS billing requires the tenant database runtime"
+    });
+  }
+
+  const idempotency = getOrderIdempotencyKey(req);
+  if (idempotency.error) {
+    return res.status(400).json({
+      success: false,
+      code: idempotency.error === "Idempotency-Key is required"
+        ? "ORDER_BILLING_IDEMPOTENCY_REQUIRED"
+        : "ORDER_BILLING_IDEMPOTENCY_INVALID",
+      message: idempotency.error
+    });
+  }
+
+  let finalized;
+  try {
+    const databaseClient = await getStaffTenantMutationClient(req, supabase);
+    finalized = await finalizeTask6PosBilling({
+      sourceClient: supabase,
+      databaseClient,
+      hotelSlug,
+      orderId,
+      finalizeScope,
+      idempotencyKey: idempotency.key,
+      actorUserId: req.staffUser?.sub || req.staffUser?.id || null,
+      actorRole: req.staffRole || req.staffUser?.role || "owner",
+      actorDisplayName: req.staffUser?.displayName || "Hotel staff"
+    });
+  } catch (error) {
+    const knownCode = String(error?.code || "").trim().toUpperCase();
+    if (
+      knownCode === "TASK6_ORDER_BILL_FAMILY_ROOT_REQUIRED" ||
+      knownCode === "TASK6_ORDER_BILL_FAMILY_FINALIZATION_REQUIRED"
+    ) {
+      return res.status(409).json({
+        success: false,
+        code: "ORDER_FAMILY_BILLING_REQUIRED",
+        message: "Linked table orders must be billed together from the parent order"
+      });
+    }
+    console.error("Task 6 atomic staff billing preparation error:", error);
+    return res.status(500).json({
+      success: false,
+      code: "ORDER_BILLING_PREPARATION_FAILED",
+      message: "Could not prepare the authoritative order bill"
+    });
+  }
+
+  if (!finalized.ok) {
+    return res.status(finalized.status).json({
+      success: false,
+      code: finalized.code,
+      message: finalized.message
+    });
+  }
+
+  const createdByStaffMap = await getOrderCreatedByStaffMap(supabase, finalized.orders);
+  const orders = finalized.orders.map((order) => buildStaffOrderResponse(order, createdByStaffMap));
+  const isFamily = finalizeScope === TASK6_POS_BILLING_SCOPES.FAMILY;
+  return res.status(finalized.idempotentReplay ? 200 : 201).json({
+    success: true,
+    atomicFinalizer: true,
+    idempotentReplay: finalized.idempotentReplay,
+    foodBillSnapshotsReady: finalized.snapshots.length,
+    message: finalized.idempotentReplay
+      ? (isFamily ? "Table family was already billed" : "Order was already billed")
+      : (isFamily
+        ? `Marked ${orders.length} linked order${orders.length === 1 ? "" : "s"} billed`
+        : "Order marked billed"),
+    ...(isFamily ? { orders } : { order: orders[0] })
+  });
 }
 
 function getSafeJsonRecord(value) {
@@ -5158,6 +5247,16 @@ router.patch("/orders/:id/mark-billed", requireStaffAuth, requireStaffManagerAcc
       });
     }
 
+    if (env.task6PosBillingFinalizerEnabled) {
+      return respondWithTask6AtomicStaffBilling({
+        req,
+        res,
+        hotelSlug,
+        orderId,
+        finalizeScope: TASK6_POS_BILLING_SCOPES.SINGLE
+      });
+    }
+
     const { data: currentOrder, error: currentOrderError } = await supabase
       .from("orders")
       .select(STAFF_ORDER_LIST_FIELDS)
@@ -5476,6 +5575,16 @@ router.patch("/orders/:id/mark-family-billed", requireStaffAuth, requireStaffMan
       return res.status(409).json({
         success: false,
         message: "Open the parent order to mark the full table family billed"
+      });
+    }
+
+    if (env.task6PosBillingFinalizerEnabled) {
+      return respondWithTask6AtomicStaffBilling({
+        req,
+        res,
+        hotelSlug,
+        orderId,
+        finalizeScope: TASK6_POS_BILLING_SCOPES.FAMILY
       });
     }
 

@@ -1326,10 +1326,112 @@ async function issueFoodBillSnapshotIfFinal({
   }
 }
 
+function buildTask6FoodBillNumber(order = {}, issuedAt = new Date().toISOString()) {
+  const hotelPart = sanitizeText(order.hotel_slug || order.hotel_name || "HOTEL", 180)
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 18) || "HOTEL";
+  const datePart = String(issuedAt || "").slice(0, 10).replace(/[^0-9]/g, "") || "DATE";
+  const orderPart = String(order.id || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "")
+    .slice(-8) || "ORDER";
+
+  return ["BILL", hotelPart, datePart, orderPart].join("-");
+}
+
+function buildTask6ProjectedFoodBillOrder(order = {}, issuedAt) {
+  return {
+    ...order,
+    billing_status: "billed",
+    billed_at: issuedAt,
+    bill_number: buildTask6FoodBillNumber(order, issuedAt)
+  };
+}
+
+async function buildTask6FoodBillFinalizationCandidates({
+  supabaseClient,
+  hotelSlug,
+  orderId,
+  finalizeScope,
+  actor = {},
+  issuedAt
+} = {}) {
+  const scope = String(finalizeScope || "").trim().toLowerCase();
+  if (!supabaseClient || typeof supabaseClient.from !== "function") {
+    throw new TypeError("Food bill source client is required");
+  }
+  if (!["single_bill", "family_bill"].includes(scope)) {
+    throw new TypeError("Food bill finalization scope is invalid");
+  }
+  if (!String(issuedAt || "").trim()) {
+    throw new TypeError("Food bill issue time is required");
+  }
+
+  const source = await fetchOrderSource({ supabaseClient, hotelSlug, orderId });
+  if (!source) return null;
+
+  const rootOrder = source.order;
+  const relatedOrders = Array.isArray(source.relatedOrders) ? source.relatedOrders : [];
+  if (scope === "family_bill" && rootOrder.parent_order_id) {
+    const error = new Error("A table-family bill must start from its parent order");
+    error.code = "TASK6_ORDER_BILL_FAMILY_ROOT_REQUIRED";
+    throw error;
+  }
+  if (
+    scope === "single_bill" &&
+    (rootOrder.parent_order_id || relatedOrders.length > 0)
+  ) {
+    const error = new Error("Linked table orders must be billed as one family operation");
+    error.code = "TASK6_ORDER_BILL_FAMILY_FINALIZATION_REQUIRED";
+    throw error;
+  }
+
+  const targetOrders = scope === "family_bill"
+    ? [rootOrder, ...relatedOrders]
+    : [rootOrder];
+  const projectedById = new Map(targetOrders.map((order) => [
+    String(order.id),
+    buildTask6ProjectedFoodBillOrder(order, issuedAt)
+  ]));
+
+  const candidates = [];
+  for (const sourceOrder of targetOrders) {
+    const projectedOrder = projectedById.get(String(sourceOrder.id));
+    const projectedSource = {
+      ...source,
+      order: projectedOrder,
+      relatedOrders: String(sourceOrder.id) === String(rootOrder.id)
+        ? relatedOrders.map((order) => projectedById.get(String(order.id)))
+        : [],
+      roomTransfer: String(sourceOrder.id) === String(rootOrder.id)
+        ? source.roomTransfer
+        : null
+    };
+    const bill = await buildLiveFoodBill(projectedSource, actor);
+    candidates.push({
+      orderId: String(projectedOrder.id),
+      snapshotJson: bill,
+      payloadHash: buildPayloadHash(bill)
+    });
+  }
+
+  return {
+    anchorOrderId: String(rootOrder.id),
+    finalizeScope: scope,
+    candidates
+  };
+}
+
 module.exports = {
   buildDefaultFoodBillFormat,
   buildFoodBillFormatRow,
   buildLiveFoodBill,
+  buildTask6FoodBillFinalizationCandidates,
+  buildTask6FoodBillNumber,
   buildTotals,
   getFoodBillDocumentStatus,
   getFoodBillFormat,

@@ -322,6 +322,12 @@ function getReadinessChecks() {
       !env.task6RoomCheckoutFinalizerEnabled || env.roomCombinedCheckoutEnabled,
       "task6_checkout_finalizer_requires_combined_checkout",
       env.task6RoomCheckoutFinalizerEnabled
+    ),
+    buildReadinessCheck(
+      "task6_pos_billing_finalizer",
+      !env.task6PosBillingFinalizerEnabled || env.tenantRuntimeWritesEnabled,
+      "task6_pos_billing_finalizer_requires_tenant_runtime_writes",
+      env.task6PosBillingFinalizerEnabled
     )
   ];
 }
