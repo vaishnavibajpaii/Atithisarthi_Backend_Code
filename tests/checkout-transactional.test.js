@@ -330,6 +330,50 @@ test("atomic checkout adapter unwraps the tenant RPC row and function column", a
   assert.equal(result.checkoutBill.invoiceNumber, "RCPT-HOTEL-A-99");
 });
 
+test("atomic checkout adapter accepts a text-form scalar tenant RPC result", async () => {
+  const client = createFakeDatabase({
+    rows: makeCheckoutRows({ orders: [roomServiceOrder] }),
+    rpcResult: async (name, params) => {
+      assert.equal(name, TASK6_CHECKOUT_RPC_NAME);
+      return {
+        data: [{
+          result: JSON.stringify({
+            idempotentReplay: true,
+            receipt: { id: 99, booking_id: 42, payment_status: "paid", amount: 70 },
+            booking: { id: 42, hotel_slug: "hotel-a", booking_status: "checked_out", checked_out_at: "2026-10-21T12:30:00.000Z" },
+            snapshot: {
+              id: 100,
+              hotel_slug: "hotel-a",
+              invoice_number: "RCPT-HOTEL-A-99",
+              snapshot_json: params.p_snapshot_json
+            },
+            settledOrderCount: 1
+          })
+        }],
+        error: null
+      };
+    }
+  });
+
+  const result = await settleTask6RoomCheckout({
+    supabaseClient: client,
+    hotelSlug: "hotel-a",
+    bookingId: "42",
+    amount: 70,
+    paymentMethod: "cash",
+    idempotencyKey: "checkout:42:once",
+    currency: "INR",
+    actorUserId: "manager-1",
+    actorRole: "manager",
+    actorDisplayName: "Synthetic Manager"
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.idempotentReplay, true);
+  assert.equal(result.receipt.id, 99);
+  assert.equal(result.checkoutBill.invoiceNumber, "RCPT-HOTEL-A-99");
+});
+
 test("Task 2 provider checkout errors fail closed and changed-key replay is a conflict", () => {
   assert.deepEqual(
     mapTask6CheckoutFinalizerError({

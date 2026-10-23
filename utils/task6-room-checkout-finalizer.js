@@ -160,6 +160,17 @@ function normalizeTask6CheckoutRpcData(value) {
     if (data.length !== 1) return null;
     data = data[0];
   }
+
+  // node-postgres normally parses jsonb values, but retain safe support for a
+  // text-form jsonb scalar.  This is read-only response normalization; no
+  // untrusted request value is accepted or changed here.
+  if (typeof data === "string") {
+    try {
+      data = JSON.parse(data);
+    } catch {
+      return null;
+    }
+  }
   if (!data || typeof data !== "object" || Array.isArray(data)) return null;
 
   // The tenant mutation RPC client runs SELECT * FROM public.<function>(...).
@@ -167,6 +178,24 @@ function normalizeTask6CheckoutRpcData(value) {
   // single row is { task6_finalize_room_checkout: <jsonb result> }.
   if (Object.prototype.hasOwnProperty.call(data, TASK6_CHECKOUT_RPC_NAME)) {
     data = data[TASK6_CHECKOUT_RPC_NAME];
+  }
+
+  // A scalar function result can also be named by a database driver using a
+  // one-column alias.  Only unwrap an otherwise single-column row; a normal
+  // finalizer result has several required fields and is never affected.
+  if (data && typeof data === "object" && !Array.isArray(data)) {
+    const keys = Object.keys(data);
+    if (keys.length === 1 && keys[0] !== "receipt") {
+      data = data[keys[0]];
+    }
+  }
+
+  if (typeof data === "string") {
+    try {
+      data = JSON.parse(data);
+    } catch {
+      return null;
+    }
   }
   return data && typeof data === "object" && !Array.isArray(data) ? data : null;
 }
