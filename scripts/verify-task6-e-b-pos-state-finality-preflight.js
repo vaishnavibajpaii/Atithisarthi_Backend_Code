@@ -27,6 +27,8 @@ assert.match(sql, /food_snapshot_immutability_trigger_enabled/i);
 assert.match(sql, /task6_billing_finalizer_security_invoker/i);
 assert.match(sql, /final_snapshot_source_finality_mismatch/i);
 assert.match(sql, /finalized_orders_with_cancelled_or_failed_operational_status/i);
+assert.match(sql, /paid_terminal_order_state_combinations/i);
+assert.match(sql, /\('orders', 'order_version', 'bigint'\)/i);
 assert.match(sql, /orders_trigger_inventory/i);
 assert.match(sql, /order_status_values/i);
 assert.match(design, /Task 2 payment finalization/i);

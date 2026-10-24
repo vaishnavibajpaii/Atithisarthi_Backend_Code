@@ -33,7 +33,7 @@ required_columns(table_name, column_name, expected_type) as (
     ('orders', 'bill_number', 'text'),
     ('orders', 'billed_at', 'timestamp with time zone'),
     ('orders', 'paid_at', 'timestamp with time zone'),
-    ('orders', 'order_version', 'integer'),
+    ('orders', 'order_version', 'bigint'),
     ('orders', 'financial_snapshot_version', 'integer'),
     ('food_order_bill_snapshots', 'tenant_id', 'uuid'),
     ('food_order_bill_snapshots', 'property_id', 'bigint'),
@@ -304,6 +304,32 @@ checks(check_name, expected, actual, result) as (
   from public.orders
   where lower(coalesce(payment_status, '')) = 'paid'
     and lower(coalesce(status, '')) in ('cancelled', 'payment_failed')
+
+  union all
+
+  select
+    'paid_terminal_order_state_combinations',
+    'informational',
+    coalesce(jsonb_agg(
+      jsonb_build_object(
+        'orderStatus', order_status,
+        'billingStatus', billing_status,
+        'kitchenStatus', kitchen_status,
+        'count', row_count
+      ) order by order_status, billing_status, kitchen_status
+    )::text, '[]'),
+    'INFO'
+  from (
+    select
+      coalesce(nullif(lower(btrim(status)), ''), '<empty>') as order_status,
+      coalesce(nullif(lower(btrim(billing_status)), ''), '<empty>') as billing_status,
+      coalesce(nullif(lower(btrim(kitchen_status)), ''), '<empty>') as kitchen_status,
+      count(*) as row_count
+    from public.orders
+    where lower(coalesce(payment_status, '')) = 'paid'
+      and lower(coalesce(status, '')) in ('cancelled', 'payment_failed')
+    group by 1, 2, 3
+  ) paid_terminal_group
 
   union all
 
