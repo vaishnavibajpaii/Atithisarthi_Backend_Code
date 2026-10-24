@@ -253,6 +253,22 @@ test("live POS verifier is explicitly TEST-write gated and checks one logical re
   assert.match(source, /Cancel this synthetic unpaid order/);
 });
 
+test("live POS billing verifier is TEST-gated and preserves any ambiguous financial evidence", () => {
+  const source = readBackend("scripts/verify-task6-pos-billing-live.js");
+  const packageJson = readBackend("package.json");
+
+  assert.match(source, /TASK6_POS_BILLING_TEST_WRITES_CONFIRMED/);
+  assert.match(source, /TASK6_POS_BILLING_LIVE_ENV[\s\S]*TEST/);
+  assert.match(source, /TASK6_POS_BILLING_TEST_BEARER_TOKEN/);
+  assert.match(source, /task6_pos_billing_finalizer/);
+  assert.match(source, /enabled !== true/);
+  assert.match(source, /Promise\.all\(/);
+  assert.match(source, /ORDER_BILLING_IDEMPOTENCY_CONFLICT/);
+  assert.match(source, /paymentStatus[^\n]*unpaid/);
+  assert.match(source, /Preserve the TEST order, bill snapshot, and audit evidence/);
+  assert.match(packageJson, /"verify:task6-pos-billing-live"/);
+});
+
 test("Task 6 POS billing finalizer preserves the billing intent across retries", () => {
   const original = buildTask6PosBillingRequestFingerprint({
     hotelSlug: "hotel-a",
