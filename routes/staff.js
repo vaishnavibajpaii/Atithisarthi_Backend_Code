@@ -3539,6 +3539,13 @@ router.patch(
         .from("orders")
         .update({
           kitchen_status: kitchenStatus,
+          // A served KDS ticket ends the operational lifecycle for the root
+          // order as well. Keeping status="preparing" here leaves a completed
+          // table order artificially active and forces staff toward the
+          // generic status route, which correctly rejects a skipped KDS path.
+          // This is one row update; the Task 6 state trigger validates the
+          // ready -> served transition atomically.
+          status: kitchenStatus === "served" ? "completed" : currentResult.data.status,
           order_version: currentVersion + 1
         })
         .eq("id", orderId)

@@ -472,7 +472,7 @@ app.get("/api/readiness", (req, res) => {
     success: ready,
     ready,
     env: env.nodeEnv,
-    releaseMarker: "task6-atomic-checkout-only-20261024",
+    releaseMarker: "task6-kds-serve-completes-order-20261024",
     uptimeSeconds: Math.round(process.uptime()),
     timestamp: new Date().toISOString(),
     checks

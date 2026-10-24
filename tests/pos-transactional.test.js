@@ -393,6 +393,15 @@ test("Task 6-E-B maps database finality guard conflicts without exposing databas
   assert.match(adminRoute, /isTask6OrderStateFinalityConflict\(error\)[\s\S]*?status\(409\)/);
 });
 
+test("serving a KDS ticket closes its root order lifecycle in the same guarded update", () => {
+  const staffRoute = readBackend("routes/staff.js");
+
+  assert.match(
+    staffRoute,
+    /kitchen_status:\s*kitchenStatus,[\s\S]{0,700}status:\s*kitchenStatus === "served" \? "completed" : currentResult\.data\.status,[\s\S]{0,200}order_version:\s*currentVersion \+ 1/
+  );
+});
+
 test("Task 6-E-B2 blocks terminal operational changes after financial finality", () => {
   const migration = readBackend("scripts/task6-e-b2-finalized-order-operational-guard.sql");
   const verifier = readBackend("scripts/verify-task6-e-b2-finalized-order-operational-guard-migration.js");
