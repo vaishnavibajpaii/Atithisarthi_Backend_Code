@@ -5,19 +5,14 @@
 -- rolled back unconditionally, so it leaves no order, bill, snapshot, audit,
 -- payment, notification, or other durable row change.
 --
+-- It intentionally uses no temporary tables: Supabase SQL Editor may not keep
+-- a temporary relation available for every statement in a submitted script.
 -- Do not run against production or a different order id.
 
 begin;
 set local lock_timeout = '10s';
 set local statement_timeout = '60s';
 set local search_path = pg_catalog, public;
-
-create temporary table task6_e_b2_runtime_results (
-  check_name text primary key,
-  expected text not null,
-  actual text not null,
-  result text not null check (result in ('PASS', 'FAIL'))
-);
 
 do $task6_e_b2_runtime_test$
 declare
@@ -44,19 +39,11 @@ begin
        set financial_snapshot_version = financial_snapshot_version + 1
      where id = v_order_id
        and hotel_slug = v_hotel_slug;
-    insert into pg_temp.task6_e_b2_runtime_results values (
-      'final_source_snapshot_mutation_denied',
-      'TASK6_ORDER_FINAL_FINANCIAL_SNAPSHOT_IMMUTABLE',
-      'update unexpectedly succeeded',
-      'FAIL'
-    );
+    raise exception 'TASK6_E_B2_RUNTIME_TEST_EXPECTED_SOURCE_SNAPSHOT_GUARD';
   exception when check_violation then
-    insert into pg_temp.task6_e_b2_runtime_results values (
-      'final_source_snapshot_mutation_denied',
-      'TASK6_ORDER_FINAL_FINANCIAL_SNAPSHOT_IMMUTABLE',
-      sqlerrm,
-      case when position('TASK6_ORDER_FINAL_FINANCIAL_SNAPSHOT_IMMUTABLE' in sqlerrm) > 0 then 'PASS' else 'FAIL' end
-    );
+    if position('TASK6_ORDER_FINAL_FINANCIAL_SNAPSHOT_IMMUTABLE' in sqlerrm) = 0 then
+      raise exception 'TASK6_E_B2_RUNTIME_TEST_UNEXPECTED_SOURCE_GUARD error=%', sqlerrm;
+    end if;
   end;
 
   begin
@@ -64,19 +51,11 @@ begin
        set bill_number = 'TASK6-MUTATION-PROBE'
      where id = v_order_id
        and hotel_slug = v_hotel_slug;
-    insert into pg_temp.task6_e_b2_runtime_results values (
-      'final_bill_mutation_denied',
-      'TASK6_ORDER_FINAL_BILL_IMMUTABLE',
-      'update unexpectedly succeeded',
-      'FAIL'
-    );
+    raise exception 'TASK6_E_B2_RUNTIME_TEST_EXPECTED_BILL_GUARD';
   exception when check_violation then
-    insert into pg_temp.task6_e_b2_runtime_results values (
-      'final_bill_mutation_denied',
-      'TASK6_ORDER_FINAL_BILL_IMMUTABLE',
-      sqlerrm,
-      case when position('TASK6_ORDER_FINAL_BILL_IMMUTABLE' in sqlerrm) > 0 then 'PASS' else 'FAIL' end
-    );
+    if position('TASK6_ORDER_FINAL_BILL_IMMUTABLE' in sqlerrm) = 0 then
+      raise exception 'TASK6_E_B2_RUNTIME_TEST_UNEXPECTED_BILL_GUARD error=%', sqlerrm;
+    end if;
   end;
 
   begin
@@ -84,19 +63,11 @@ begin
        set status = 'cancelled'
      where id = v_order_id
        and hotel_slug = v_hotel_slug;
-    insert into pg_temp.task6_e_b2_runtime_results values (
-      'final_status_cancellation_denied',
-      'TASK6_ORDER_FINAL_OPERATIONAL_STATE_IMMUTABLE',
-      'update unexpectedly succeeded',
-      'FAIL'
-    );
+    raise exception 'TASK6_E_B2_RUNTIME_TEST_EXPECTED_STATUS_GUARD';
   exception when check_violation then
-    insert into pg_temp.task6_e_b2_runtime_results values (
-      'final_status_cancellation_denied',
-      'TASK6_ORDER_FINAL_OPERATIONAL_STATE_IMMUTABLE',
-      sqlerrm,
-      case when position('TASK6_ORDER_FINAL_OPERATIONAL_STATE_IMMUTABLE' in sqlerrm) > 0 then 'PASS' else 'FAIL' end
-    );
+    if position('TASK6_ORDER_FINAL_OPERATIONAL_STATE_IMMUTABLE' in sqlerrm) = 0 then
+      raise exception 'TASK6_E_B2_RUNTIME_TEST_UNEXPECTED_STATUS_GUARD error=%', sqlerrm;
+    end if;
   end;
 
   begin
@@ -104,25 +75,23 @@ begin
        set kitchen_status = 'cancelled'
      where id = v_order_id
        and hotel_slug = v_hotel_slug;
-    insert into pg_temp.task6_e_b2_runtime_results values (
-      'final_kitchen_cancellation_denied',
-      'TASK6_ORDER_FINAL_OPERATIONAL_STATE_IMMUTABLE',
-      'update unexpectedly succeeded',
-      'FAIL'
-    );
+    raise exception 'TASK6_E_B2_RUNTIME_TEST_EXPECTED_KITCHEN_GUARD';
   exception when check_violation then
-    insert into pg_temp.task6_e_b2_runtime_results values (
-      'final_kitchen_cancellation_denied',
-      'TASK6_ORDER_FINAL_OPERATIONAL_STATE_IMMUTABLE',
-      sqlerrm,
-      case when position('TASK6_ORDER_FINAL_OPERATIONAL_STATE_IMMUTABLE' in sqlerrm) > 0 then 'PASS' else 'FAIL' end
-    );
+    if position('TASK6_ORDER_FINAL_OPERATIONAL_STATE_IMMUTABLE' in sqlerrm) = 0 then
+      raise exception 'TASK6_E_B2_RUNTIME_TEST_UNEXPECTED_KITCHEN_GUARD error=%', sqlerrm;
+    end if;
   end;
 end;
 $task6_e_b2_runtime_test$;
 
 select check_name, expected, actual, result
-from pg_temp.task6_e_b2_runtime_results
+from (
+  values
+    ('final_source_snapshot_mutation_denied', 'TASK6_ORDER_FINAL_FINANCIAL_SNAPSHOT_IMMUTABLE', 'guard rejected mutation', 'PASS'),
+    ('final_bill_mutation_denied', 'TASK6_ORDER_FINAL_BILL_IMMUTABLE', 'guard rejected mutation', 'PASS'),
+    ('final_status_cancellation_denied', 'TASK6_ORDER_FINAL_OPERATIONAL_STATE_IMMUTABLE', 'guard rejected mutation', 'PASS'),
+    ('final_kitchen_cancellation_denied', 'TASK6_ORDER_FINAL_OPERATIONAL_STATE_IMMUTABLE', 'guard rejected mutation', 'PASS')
+) as results(check_name, expected, actual, result)
 order by check_name;
 
 rollback;

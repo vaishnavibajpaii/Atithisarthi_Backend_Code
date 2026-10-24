@@ -420,8 +420,11 @@ test("Task 6-E-B2 runtime failure injection is TEST-order-scoped and rolls back"
   assert.match(testSql, /TASK6_ORDER_FINAL_FINANCIAL_SNAPSHOT_IMMUTABLE/i);
   assert.match(testSql, /TASK6_ORDER_FINAL_BILL_IMMUTABLE/i);
   assert.match(testSql, /TASK6_ORDER_FINAL_OPERATIONAL_STATE_IMMUTABLE/i);
-  assert.match(testSql, /create temporary table/i);
-  assert.match(testSql, /pg_temp\.task6_e_b2_runtime_results/i);
+  assert.doesNotMatch(testSql, /create temporary table|pg_temp\./i);
+  assert.match(testSql, /TASK6_E_B2_RUNTIME_TEST_EXPECTED_SOURCE_SNAPSHOT_GUARD/i);
+  assert.match(testSql, /TASK6_E_B2_RUNTIME_TEST_EXPECTED_BILL_GUARD/i);
+  assert.match(testSql, /TASK6_E_B2_RUNTIME_TEST_EXPECTED_STATUS_GUARD/i);
+  assert.match(testSql, /TASK6_E_B2_RUNTIME_TEST_EXPECTED_KITCHEN_GUARD/i);
   assert.match(testSql, /rollback;/i);
   assert.doesNotMatch(testSql, /\b(?:insert into|delete from)\s+public\./i);
   assert.match(postcheckSql, /^begin transaction read only;/im);
