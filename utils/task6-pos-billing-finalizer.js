@@ -95,6 +95,13 @@ function getTask6PosBillingErrorText(error = {}) {
     .toUpperCase();
 }
 
+function getSafeTask6PosBillingDatabaseDiagnostic(error = {}) {
+  return {
+    databaseCode: String(error.code || "").trim().slice(0, 40) || null,
+    databaseMessage: String(error.message || "").trim().slice(0, 320) || null
+  };
+}
+
 function mapTask6PosBillingFinalizerError(error = {}) {
   const code = String(error.code || "").trim().toUpperCase();
   const marker = getTask6PosBillingErrorText(error);
@@ -112,6 +119,9 @@ function mapTask6PosBillingFinalizerError(error = {}) {
   }
   if (marker.includes("TASK6_ORDER_BILL_FINANCIAL_SNAPSHOT_NOT_FINALIZABLE")) {
     return { ok: false, status: 409, code: "ORDER_BILLING_SNAPSHOT_UNAVAILABLE", message: "This order has no Task 6 financial snapshot and needs manual review" };
+  }
+  if (marker.includes("TASK6_ORDER_BILL_")) {
+    return { ok: false, status: 409, code: "order_billing_state_conflict", message: "Order state or authoritative bill snapshot changed. Reload and try again." };
   }
   if (code === "42501") {
     return { ok: false, status: 403, code: "order_billing_scope_denied", message: "Billing is not available for this hotel or order" };
@@ -171,7 +181,12 @@ async function finalizeTask6PosBilling({
     p_actor_role: normalizedActorRole,
     p_snapshots: candidateSet.candidates
   });
-  if (error) return mapTask6PosBillingFinalizerError(error);
+  if (error) {
+    return {
+      ...mapTask6PosBillingFinalizerError(error),
+      diagnostic: getSafeTask6PosBillingDatabaseDiagnostic(error)
+    };
+  }
 
   const data = normalizeTask6PosBillingRpcData(rawData);
   if (!data || !Array.isArray(data.orders) || !Array.isArray(data.snapshots) || data.orders.length !== data.snapshots.length || !data.orders.length) {
@@ -192,6 +207,7 @@ module.exports = {
   TASK6_POS_BILLING_SCOPES,
   buildTask6PosBillingRequestFingerprint,
   finalizeTask6PosBilling,
+  getSafeTask6PosBillingDatabaseDiagnostic,
   mapTask6PosBillingFinalizerError,
   normalizeTask6PosBillingRpcData
 };

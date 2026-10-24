@@ -22,6 +22,7 @@ const {
 const {
   TASK6_POS_BILLING_SCOPES,
   buildTask6PosBillingRequestFingerprint,
+  getSafeTask6PosBillingDatabaseDiagnostic,
   mapTask6PosBillingFinalizerError,
   normalizeTask6PosBillingRpcData
 } = require("../utils/task6-pos-billing-finalizer");
@@ -312,6 +313,14 @@ test("Task 6 POS billing adapter accepts only a scalar RPC result and maps confl
     mapTask6PosBillingFinalizerError({ message: "TASK6_ORDER_BILL_FINANCIAL_SNAPSHOT_NOT_FINALIZABLE" }).status,
     409
   );
+  assert.equal(
+    mapTask6PosBillingFinalizerError({ message: "TASK6_ORDER_BILL_SNAPSHOT_MISMATCH" }).status,
+    409
+  );
+  assert.deepEqual(
+    getSafeTask6PosBillingDatabaseDiagnostic({ code: "P0001", message: "TASK6_ORDER_BILL_TEST" }),
+    { databaseCode: "P0001", databaseMessage: "TASK6_ORDER_BILL_TEST" }
+  );
 });
 
 test("Task 6 POS billing is feature-gated and leaves gateway payment finality outside the bill finalizer", () => {
@@ -332,5 +341,19 @@ test("Task 6 POS billing is feature-gated and leaves gateway payment finality ou
   assert.match(staffClient, /"Idempotency-Key": idempotencyKey/);
   assert.match(billingMigration, /Provider payment finality remains Task 2 controlled/i);
   assert.doesNotMatch(billingMigration, /razorpay.*api|fetch\s*\(/i);
+});
+
+test("existing POS billing replay verifier is TEST-gated and never creates a second order", () => {
+  const source = readBackend("scripts/verify-task6-pos-billing-replay-live.js");
+  const packageJson = readBackend("package.json");
+
+  assert.match(source, /TASK6_POS_BILLING_EXISTING_REPLAY_CONFIRMED/);
+  assert.match(source, /TASK6_POS_BILLING_LIVE_ENV[\s\S]*TEST/);
+  assert.match(source, /TASK6_POS_BILLING_REPLAY_ORDER_ID/);
+  assert.match(source, /TASK6_POS_BILLING_REPLAY_IDEMPOTENCY_KEY/);
+  assert.match(source, /Promise\.all\(\[finalizeBill\(inputs\), finalizeBill\(inputs\)\]\)/);
+  assert.match(source, /ORDER_BILLING_IDEMPOTENCY_CONFLICT/);
+  assert.doesNotMatch(source, /api\/orders/);
+  assert.match(packageJson, /"verify:task6-pos-billing-replay-live"/);
 });
 

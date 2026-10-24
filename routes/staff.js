@@ -771,6 +771,12 @@ async function respondWithTask6AtomicStaffBilling({
   }
 
   if (!finalized.ok) {
+    console.error("Task 6 atomic staff billing finalizer rejected", {
+      responseCode: finalized.code,
+      responseStatus: finalized.status,
+      databaseCode: finalized.diagnostic?.databaseCode || null,
+      databaseMessage: finalized.diagnostic?.databaseMessage || null
+    });
     return res.status(finalized.status).json({
       success: false,
       code: finalized.code,
