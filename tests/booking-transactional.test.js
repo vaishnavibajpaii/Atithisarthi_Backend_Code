@@ -96,6 +96,26 @@ test("booking RPC errors are classified without exposing database details", () =
   );
 });
 
+test("generic booking status routes cannot bypass the atomic checkout finalizer", () => {
+  const adminRoute = read("routes/admin-room-booking.js");
+  const staffRoute = read("routes/staff-room-booking.js");
+  const adminClient = read("../frontend/js/admin.js");
+  const staffClient = read("../frontend/js/staff-orders.js");
+
+  for (const source of [adminRoute, staffRoute]) {
+    assert.match(source, /bookingStatus === "checked_out"[\s\S]*?ROOM_CHECKOUT_REQUIRES_FINALIZER/);
+    assert.match(source, /Use Combined Checkout to complete payment, room-service settlement, receipt, and final folio together/);
+  }
+
+  const adminStatusOptions = adminClient.match(
+    /function getAdminRoomBookingStatusOptions\([\s\S]*?\n}\r?\n\r?\nfunction buildAdminRoomBookingControls/
+  )?.[0] || "";
+  assert.doesNotMatch(adminStatusOptions, /\["checked_out", "Checked Out"\]/);
+  assert.doesNotMatch(staffClient, /checked_in:\s*Object\.freeze\(\["checked_in", "checked_out"\]\)/);
+  assert.match(adminClient, /Finalize Combined Checkout/);
+  assert.match(staffClient, /Finalize Combined Checkout/);
+});
+
 test("booking overlap preview uses half-open interval semantics", () => {
   const calls = [];
   const query = {

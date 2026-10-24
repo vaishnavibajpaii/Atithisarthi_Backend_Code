@@ -1473,20 +1473,18 @@ router.patch(
       const currentBooking = bookingResult.booking;
       const currentStatus = normalizeText(currentBooking.booking_status, 60);
 
+      if (bookingStatus === "checked_out") {
+        return res.status(409).json({
+          success: false,
+          code: "ROOM_CHECKOUT_REQUIRES_FINALIZER",
+          message: "Use Combined Checkout to complete payment, room-service settlement, receipt, and final folio together"
+        });
+      }
+
       if (FINAL_BOOKING_STATUSES.includes(currentStatus) && currentStatus !== bookingStatus) {
         return res.status(409).json({
           success: false,
           message: "This booking is already closed and cannot be moved to another status"
-        });
-      }
-
-      if (
-        bookingStatus === "checked_out" &&
-        !["checked_in", "checked_out"].includes(currentStatus)
-      ) {
-        return res.status(409).json({
-          success: false,
-          message: "Guest must be checked in before checkout"
         });
       }
 

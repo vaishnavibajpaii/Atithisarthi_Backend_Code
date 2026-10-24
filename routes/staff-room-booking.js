@@ -72,7 +72,7 @@ const router = express.Router();
 const STAFF_BOOKING_STATUS_TRANSITIONS = Object.freeze({
   pending: Object.freeze(["pending", "confirmed", "cancelled", "no_show"]),
   confirmed: Object.freeze(["confirmed", "checked_in", "cancelled", "no_show"]),
-  checked_in: Object.freeze(["checked_in", "checked_out"]),
+  checked_in: Object.freeze(["checked_in"]),
   checked_out: Object.freeze(["checked_out"]),
   cancelled: Object.freeze(["cancelled"]),
   no_show: Object.freeze(["no_show"])
@@ -1631,6 +1631,14 @@ router.patch(
       const currentBooking = bookingResult.booking;
       const currentStatus = normalizeText(currentBooking.booking_status, 60);
       const allowedNextStatuses = STAFF_BOOKING_STATUS_TRANSITIONS[currentStatus] || [];
+
+      if (bookingStatus === "checked_out") {
+        return res.status(409).json({
+          success: false,
+          code: "ROOM_CHECKOUT_REQUIRES_FINALIZER",
+          message: "Use Combined Checkout to complete payment, room-service settlement, receipt, and final folio together"
+        });
+      }
 
       if (!allowedNextStatuses.includes(bookingStatus)) {
         return res.status(409).json({
