@@ -179,7 +179,9 @@ async function finalizeTask6PosBilling({
     p_issued_at: issuedAt,
     p_actor_id: normalizedActorId,
     p_actor_role: normalizedActorRole,
-    p_snapshots: candidateSet.candidates
+    // node-postgres serializes a JavaScript Array as a PostgreSQL array literal.
+    // This RPC parameter is jsonb, so send canonical JSON text explicitly.
+    p_snapshots: JSON.stringify(candidateSet.candidates)
   });
   if (error) {
     return {

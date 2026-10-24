@@ -321,6 +321,12 @@ test("Task 6 POS billing adapter accepts only a scalar RPC result and maps confl
     getSafeTask6PosBillingDatabaseDiagnostic({ code: "P0001", message: "TASK6_ORDER_BILL_TEST" }),
     { databaseCode: "P0001", databaseMessage: "TASK6_ORDER_BILL_TEST" }
   );
+
+  const finalizerSource = readBackend("utils/task6-pos-billing-finalizer.js");
+  assert.match(
+    finalizerSource,
+    /p_snapshots:\s*JSON\.stringify\(candidateSet\.candidates\)/
+  );
 });
 
 test("Task 6 POS billing is feature-gated and leaves gateway payment finality outside the bill finalizer", () => {
