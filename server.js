@@ -472,6 +472,7 @@ app.get("/api/readiness", (req, res) => {
     success: ready,
     ready,
     env: env.nodeEnv,
+    releaseMarker: "task6-pos-billing-finalizer-20261024",
     uptimeSeconds: Math.round(process.uptime()),
     timestamp: new Date().toISOString(),
     checks
