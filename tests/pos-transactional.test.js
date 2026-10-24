@@ -408,3 +408,21 @@ test("Task 6-E-B2 blocks terminal operational changes after financial finality",
   assert.match(packageJson, /"verify:task6-e-b2-finalized-operational-guard-migration"/);
 });
 
+test("Task 6-E-B2 runtime failure injection is TEST-order-scoped and rolls back", () => {
+  const testSql = readBackend("scripts/task6-e-b2-finalized-order-runtime-rollback-test.sql");
+  const verifier = readBackend("scripts/verify-task6-e-b2-runtime-rollback-test.js");
+  const packageJson = readBackend("package.json");
+
+  assert.match(testSql, /v_order_id bigint := 274/i);
+  assert.match(testSql, /v_hotel_slug text := 'hotel-sai-raj'/i);
+  assert.match(testSql, /TASK6_E_B2_RUNTIME_TEST_TARGET_NOT_FINALIZED/i);
+  assert.match(testSql, /TASK6_ORDER_FINAL_FINANCIAL_SNAPSHOT_IMMUTABLE/i);
+  assert.match(testSql, /TASK6_ORDER_FINAL_BILL_IMMUTABLE/i);
+  assert.match(testSql, /TASK6_ORDER_FINAL_OPERATIONAL_STATE_IMMUTABLE/i);
+  assert.match(testSql, /create temporary table/i);
+  assert.match(testSql, /rollback;/i);
+  assert.doesNotMatch(testSql, /\b(?:insert into|delete from)\s+public\./i);
+  assert.match(verifier, /Task 6-E-B2 runtime rollback failure-injection contract: PASS/);
+  assert.match(packageJson, /"verify:task6-e-b2-runtime-rollback-test"/);
+});
+
