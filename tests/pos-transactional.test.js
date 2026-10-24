@@ -376,6 +376,10 @@ test("Task 6-E-B maps database finality guard conflicts without exposing databas
     isTask6OrderStateFinalityConflict({ details: "TASK6_ORDER_FINAL_PAYMENT_IMMUTABLE" }),
     true
   );
+  assert.equal(
+    isTask6OrderStateFinalityConflict({ message: "TASK6_ORDER_FINAL_OPERATIONAL_STATE_IMMUTABLE" }),
+    true
+  );
   assert.equal(isTask6OrderStateFinalityConflict({ message: "other failure" }), false);
   assert.deepEqual(buildTask6OrderStateFinalityConflictResponse(), {
     success: false,
@@ -387,5 +391,20 @@ test("Task 6-E-B maps database finality guard conflicts without exposing databas
   const adminRoute = readBackend("routes/admin.js");
   assert.match(staffRoute, /isTask6OrderStateFinalityConflict\(error\)[\s\S]*?status\(409\)/);
   assert.match(adminRoute, /isTask6OrderStateFinalityConflict\(error\)[\s\S]*?status\(409\)/);
+});
+
+test("Task 6-E-B2 blocks terminal operational changes after financial finality", () => {
+  const migration = readBackend("scripts/task6-e-b2-finalized-order-operational-guard.sql");
+  const verifier = readBackend("scripts/verify-task6-e-b2-finalized-order-operational-guard-migration.js");
+  const packageJson = readBackend("package.json");
+
+  assert.match(migration, /task6_guard_order_state_and_finality/i);
+  assert.match(migration, /create trigger orders_11_task6_finalized_operational_guard/i);
+  assert.match(migration, /TASK6_ORDER_FINAL_OPERATIONAL_STATE_IMMUTABLE/i);
+  assert.match(migration, /security invoker/i);
+  assert.match(migration, /set search_path = pg_catalog, public/i);
+  assert.doesNotMatch(migration, /\b(?:delete|update)\s+public\.(?:orders|food_order_bill_snapshots|food_order_bill_audit)\b/i);
+  assert.match(verifier, /Task 6-E-B2 finalized operational guard migration contract: PASS/);
+  assert.match(packageJson, /"verify:task6-e-b2-finalized-operational-guard-migration"/);
 });
 

@@ -472,7 +472,7 @@ app.get("/api/readiness", (req, res) => {
     success: ready,
     ready,
     env: env.nodeEnv,
-    releaseMarker: "task6-pos-state-finality-guard-20261024",
+    releaseMarker: "task6-pos-finalized-operational-guard-20261024",
     uptimeSeconds: Math.round(process.uptime()),
     timestamp: new Date().toISOString(),
     checks
