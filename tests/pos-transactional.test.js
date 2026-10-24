@@ -410,6 +410,7 @@ test("Task 6-E-B2 blocks terminal operational changes after financial finality",
 
 test("Task 6-E-B2 runtime failure injection is TEST-order-scoped and rolls back", () => {
   const testSql = readBackend("scripts/task6-e-b2-finalized-order-runtime-rollback-test.sql");
+  const postcheckSql = readBackend("scripts/task6-e-b2-finalized-order-runtime-postcheck.sql");
   const verifier = readBackend("scripts/verify-task6-e-b2-runtime-rollback-test.js");
   const packageJson = readBackend("package.json");
 
@@ -422,6 +423,9 @@ test("Task 6-E-B2 runtime failure injection is TEST-order-scoped and rolls back"
   assert.match(testSql, /create temporary table/i);
   assert.match(testSql, /rollback;/i);
   assert.doesNotMatch(testSql, /\b(?:insert into|delete from)\s+public\./i);
+  assert.match(postcheckSql, /^begin transaction read only;/im);
+  assert.match(postcheckSql, /final_billing_identity_preserved/i);
+  assert.match(postcheckSql, /final_snapshot_preserved_once/i);
   assert.match(verifier, /Task 6-E-B2 runtime rollback failure-injection contract: PASS/);
   assert.match(packageJson, /"verify:task6-e-b2-runtime-rollback-test"/);
 });
