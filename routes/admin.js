@@ -62,6 +62,10 @@ const {
   normalizeMenuCategoryKey,
   normalizeMenuCategoryText
 } = require("../utils/menu-categories");
+const {
+  buildTask6OrderStateFinalityConflictResponse,
+  isTask6OrderStateFinalityConflict
+} = require("../utils/task6-order-state-finality");
 
 const NOTIFICATION_EVENT_SOURCE_TYPES = [
   "order",
@@ -1529,6 +1533,9 @@ router.patch("/orders/:id/status", requireAdminFoodModule, async (req, res) => {
       order: data
     });
   } catch (error) {
+    if (isTask6OrderStateFinalityConflict(error)) {
+      return res.status(409).json(buildTask6OrderStateFinalityConflictResponse());
+    }
     console.error("Order status update error:", error);
     res.status(500).json({
       success: false,
@@ -1645,6 +1652,9 @@ router.patch("/orders/:id/billing", requireAdminFoodModule, async (req, res) => 
       order: data
     });
   } catch (error) {
+    if (isTask6OrderStateFinalityConflict(error)) {
+      return res.status(409).json(buildTask6OrderStateFinalityConflictResponse());
+    }
     console.error("Order billing update error:", error);
     res.status(500).json({
       success: false,

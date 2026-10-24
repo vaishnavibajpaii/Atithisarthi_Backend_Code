@@ -133,6 +133,10 @@ const {
   finalizeTask6PosBilling
 } = require("../utils/task6-pos-billing-finalizer");
 const {
+  buildTask6OrderStateFinalityConflictResponse,
+  isTask6OrderStateFinalityConflict
+} = require("../utils/task6-order-state-finality");
+const {
   DEFAULT_STAFF_REPORT_TIME_ZONE,
   addCalendarDays,
   buildStaffOrderTrend,
@@ -3571,6 +3575,9 @@ router.patch(
         order: buildStaffKdsOrderResponse(data, createdByStaffMap, { includeFinancials })
       });
     } catch (error) {
+      if (isTask6OrderStateFinalityConflict(error)) {
+        return res.status(409).json(buildTask6OrderStateFinalityConflictResponse());
+      }
       console.error("Staff KDS kitchen status update error:", error);
       res.status(500).json({
         success: false,
@@ -5226,6 +5233,9 @@ router.patch("/orders/:id/status", requireStaffAuth, requireStaffFoodModule, asy
       )
     });
   } catch (error) {
+    if (isTask6OrderStateFinalityConflict(error)) {
+      return res.status(409).json(buildTask6OrderStateFinalityConflictResponse());
+    }
     console.error("Staff order status update error:", error);
     res.status(500).json({
       success: false,

@@ -26,6 +26,10 @@ const {
   mapTask6PosBillingFinalizerError,
   normalizeTask6PosBillingRpcData
 } = require("../utils/task6-pos-billing-finalizer");
+const {
+  buildTask6OrderStateFinalityConflictResponse,
+  isTask6OrderStateFinalityConflict
+} = require("../utils/task6-order-state-finality");
 const { buildTask6FoodBillNumber } = require("../utils/food-order-bill");
 
 const backendRoot = path.resolve(__dirname, "..");
@@ -361,5 +365,27 @@ test("existing POS billing replay verifier is TEST-gated and never creates a sec
   assert.match(source, /ORDER_BILLING_IDEMPOTENCY_CONFLICT/);
   assert.doesNotMatch(source, /api\/orders/);
   assert.match(packageJson, /"verify:task6-pos-billing-replay-live"/);
+});
+
+test("Task 6-E-B maps database finality guard conflicts without exposing database details", () => {
+  assert.equal(
+    isTask6OrderStateFinalityConflict({ message: "TASK6_ORDER_KITCHEN_TRANSITION_INVALID" }),
+    true
+  );
+  assert.equal(
+    isTask6OrderStateFinalityConflict({ details: "TASK6_ORDER_FINAL_PAYMENT_IMMUTABLE" }),
+    true
+  );
+  assert.equal(isTask6OrderStateFinalityConflict({ message: "other failure" }), false);
+  assert.deepEqual(buildTask6OrderStateFinalityConflictResponse(), {
+    success: false,
+    code: "ORDER_STATE_FINALITY_CONFLICT",
+    message: "This order is finalized or the requested lifecycle transition is not allowed. Reload the order and use the approved workflow."
+  });
+
+  const staffRoute = readBackend("routes/staff.js");
+  const adminRoute = readBackend("routes/admin.js");
+  assert.match(staffRoute, /isTask6OrderStateFinalityConflict\(error\)[\s\S]*?status\(409\)/);
+  assert.match(adminRoute, /isTask6OrderStateFinalityConflict\(error\)[\s\S]*?status\(409\)/);
 });
 
