@@ -21,6 +21,7 @@ assert.match(source, /TASK6_ORDER_FINAL_FINANCIAL_SNAPSHOT_IMMUTABLE/i);
 assert.match(source, /TASK6_ORDER_FINAL_BILL_IMMUTABLE/i);
 assert.match(source, /TASK6_ORDER_FINAL_OPERATIONAL_STATE_IMMUTABLE/i);
 assert.match(source, /create temporary table/i);
+assert.match(source, /pg_temp\.task6_e_b2_runtime_results/i);
 assert.match(source, /rollback;/i);
 assert.doesNotMatch(source, /\b(?:insert into|delete from)\s+public\./i);
 assert.match(postcheck, /^begin transaction read only;/im);

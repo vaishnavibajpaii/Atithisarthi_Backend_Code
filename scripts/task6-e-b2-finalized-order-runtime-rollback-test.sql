@@ -17,7 +17,7 @@ create temporary table task6_e_b2_runtime_results (
   expected text not null,
   actual text not null,
   result text not null check (result in ('PASS', 'FAIL'))
-) on commit drop;
+);
 
 do $task6_e_b2_runtime_test$
 declare
@@ -44,14 +44,14 @@ begin
        set financial_snapshot_version = financial_snapshot_version + 1
      where id = v_order_id
        and hotel_slug = v_hotel_slug;
-    insert into task6_e_b2_runtime_results values (
+    insert into pg_temp.task6_e_b2_runtime_results values (
       'final_source_snapshot_mutation_denied',
       'TASK6_ORDER_FINAL_FINANCIAL_SNAPSHOT_IMMUTABLE',
       'update unexpectedly succeeded',
       'FAIL'
     );
   exception when check_violation then
-    insert into task6_e_b2_runtime_results values (
+    insert into pg_temp.task6_e_b2_runtime_results values (
       'final_source_snapshot_mutation_denied',
       'TASK6_ORDER_FINAL_FINANCIAL_SNAPSHOT_IMMUTABLE',
       sqlerrm,
@@ -64,14 +64,14 @@ begin
        set bill_number = 'TASK6-MUTATION-PROBE'
      where id = v_order_id
        and hotel_slug = v_hotel_slug;
-    insert into task6_e_b2_runtime_results values (
+    insert into pg_temp.task6_e_b2_runtime_results values (
       'final_bill_mutation_denied',
       'TASK6_ORDER_FINAL_BILL_IMMUTABLE',
       'update unexpectedly succeeded',
       'FAIL'
     );
   exception when check_violation then
-    insert into task6_e_b2_runtime_results values (
+    insert into pg_temp.task6_e_b2_runtime_results values (
       'final_bill_mutation_denied',
       'TASK6_ORDER_FINAL_BILL_IMMUTABLE',
       sqlerrm,
@@ -84,14 +84,14 @@ begin
        set status = 'cancelled'
      where id = v_order_id
        and hotel_slug = v_hotel_slug;
-    insert into task6_e_b2_runtime_results values (
+    insert into pg_temp.task6_e_b2_runtime_results values (
       'final_status_cancellation_denied',
       'TASK6_ORDER_FINAL_OPERATIONAL_STATE_IMMUTABLE',
       'update unexpectedly succeeded',
       'FAIL'
     );
   exception when check_violation then
-    insert into task6_e_b2_runtime_results values (
+    insert into pg_temp.task6_e_b2_runtime_results values (
       'final_status_cancellation_denied',
       'TASK6_ORDER_FINAL_OPERATIONAL_STATE_IMMUTABLE',
       sqlerrm,
@@ -104,14 +104,14 @@ begin
        set kitchen_status = 'cancelled'
      where id = v_order_id
        and hotel_slug = v_hotel_slug;
-    insert into task6_e_b2_runtime_results values (
+    insert into pg_temp.task6_e_b2_runtime_results values (
       'final_kitchen_cancellation_denied',
       'TASK6_ORDER_FINAL_OPERATIONAL_STATE_IMMUTABLE',
       'update unexpectedly succeeded',
       'FAIL'
     );
   exception when check_violation then
-    insert into task6_e_b2_runtime_results values (
+    insert into pg_temp.task6_e_b2_runtime_results values (
       'final_kitchen_cancellation_denied',
       'TASK6_ORDER_FINAL_OPERATIONAL_STATE_IMMUTABLE',
       sqlerrm,
@@ -122,7 +122,7 @@ end;
 $task6_e_b2_runtime_test$;
 
 select check_name, expected, actual, result
-from task6_e_b2_runtime_results
+from pg_temp.task6_e_b2_runtime_results
 order by check_name;
 
 rollback;

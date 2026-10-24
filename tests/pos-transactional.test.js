@@ -421,6 +421,7 @@ test("Task 6-E-B2 runtime failure injection is TEST-order-scoped and rolls back"
   assert.match(testSql, /TASK6_ORDER_FINAL_BILL_IMMUTABLE/i);
   assert.match(testSql, /TASK6_ORDER_FINAL_OPERATIONAL_STATE_IMMUTABLE/i);
   assert.match(testSql, /create temporary table/i);
+  assert.match(testSql, /pg_temp\.task6_e_b2_runtime_results/i);
   assert.match(testSql, /rollback;/i);
   assert.doesNotMatch(testSql, /\b(?:insert into|delete from)\s+public\./i);
   assert.match(postcheckSql, /^begin transaction read only;/im);
