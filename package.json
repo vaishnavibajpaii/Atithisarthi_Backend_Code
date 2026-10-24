@@ -104,6 +104,7 @@
     "verify:task6-pos-live": "node scripts/verify-task6-pos-live.js",
     "verify:task6-pos-billing-live": "node scripts/verify-task6-pos-billing-live.js",
     "verify:task6-pos-billing-replay-live": "node scripts/verify-task6-pos-billing-replay-live.js",
+    "verify:task6-e-b-pos-state-finality-preflight": "node scripts/verify-task6-e-b-pos-state-finality-preflight.js",
     "verify:task6-booking-live": "node scripts/verify-task6-booking-live.js",
     "verify:task6-checkout-migration": "node scripts/verify-task6-d-b-checkout-migration.js",
     "verify:task6-checkout-live": "node scripts/verify-task6-checkout-live.js",
