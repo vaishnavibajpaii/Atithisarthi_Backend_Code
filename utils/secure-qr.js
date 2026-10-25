@@ -85,10 +85,22 @@ function getQrSessionToken(req) {
 }
 
 function getQrSessionCookieOptions() {
+  // The TEST browser acceptance environment is intentionally Node
+  // "development" so the Razorpay LIVE guard remains closed, but it is still
+  // a cross-site HTTPS frontend-to-API deployment. Reuse the reviewed Task 4
+  // cookie policy rather than deriving QR-session behaviour from NODE_ENV.
+  // A `SameSite=None` cookie must be Secure; fall back safely for a local
+  // development configuration that has not enabled secure cookies.
+  const secure = env.authRefreshCookieSecure === true;
+  const configuredSameSite = String(env.authRefreshCookieSameSite || "lax").toLowerCase();
+  const sameSite = configuredSameSite === "none" && !secure
+    ? "lax"
+    : configuredSameSite;
+
   return {
     httpOnly: true,
-    secure: env.isProduction,
-    sameSite: env.isProduction ? "none" : "lax",
+    secure,
+    sameSite,
     maxAge: QR_SESSION_TTL_MS,
     path: "/api/public/qr"
   };

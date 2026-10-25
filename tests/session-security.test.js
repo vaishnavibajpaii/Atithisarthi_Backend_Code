@@ -141,6 +141,7 @@ const tenantDatabase = require("../utils/tenant-database");
 tenantDatabase.withAuthTransaction = async (work) => work({ query: fakeQuery });
 delete require.cache[require.resolve("../utils/auth-session")];
 const auth = require("../utils/auth-session");
+const { getQrSessionCookieOptions } = require("../utils/secure-qr");
 const { requireAdminAuth } = require("../middleware/require-admin-auth");
 const { requireStaffAuth } = require("../middleware/require-staff-auth");
 
@@ -175,6 +176,15 @@ test("login creates a revocable server session and 15-minute access token", asyn
   assert.equal(cookieOptions.secure, true);
   assert.equal(cookieOptions.sameSite, "none");
   assert.equal(cookieOptions.path, "/api/staff");
+});
+
+test("secure QR sessions use the reviewed cross-site cookie policy", () => {
+  const options = getQrSessionCookieOptions();
+
+  assert.equal(options.httpOnly, true);
+  assert.equal(options.secure, true);
+  assert.equal(options.sameSite, "none");
+  assert.equal(options.path, "/api/public/qr");
 });
 
 test("valid access is accepted; expired and invalid-signature tokens are rejected", async () => {

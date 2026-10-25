@@ -472,7 +472,7 @@ app.get("/api/readiness", (req, res) => {
     success: ready,
     ready,
     env: env.nodeEnv,
-    releaseMarker: "task6-kds-serve-completes-order-20261024",
+    releaseMarker: "task6-qr-cross-site-session-20261025",
     uptimeSeconds: Math.round(process.uptime()),
     timestamp: new Date().toISOString(),
     checks
