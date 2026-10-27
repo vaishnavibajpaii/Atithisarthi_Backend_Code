@@ -42,6 +42,20 @@ const calculateVerifiedOrderPricing = ordersRoute.calculateVerifiedOrderPricing;
 const buildVerifiedOrderSummary = ordersRoute.buildVerifiedOrderSummary;
 const isActiveTableOrderUniqueConflict = ordersRoute.isActiveTableOrderUniqueConflict;
 
+// The restricted tenant runtime invokes PostgreSQL directly. A scalar JSONB
+// function result is therefore returned as one row whose column is named for
+// the function, unlike the unwrapped value returned by the Supabase RPC API.
+// Keep the public QR handlers compatible with both safe execution paths.
+function unwrapJsonRpcResult(rpcData, routineName) {
+  const row = Array.isArray(rpcData) ? rpcData[0] : rpcData;
+  if (!row || typeof row !== "object" || Array.isArray(row)) return row;
+
+  const wrapped = row[routineName];
+  return wrapped && typeof wrapped === "object" && !Array.isArray(wrapped)
+    ? wrapped
+    : row;
+}
+
 function tokenRateLimitKey(scope) {
   return (req) => {
     const ip = req.ip ? rateLimit.ipKeyGenerator(req.ip) : "unknown-ip";
@@ -411,7 +425,7 @@ router.post("/:token/orders", qrWriteLimiter, validateBody(secureQrOrderSchema),
       p_request_id: req.requestId || ""
     });
     if (rpcError) throw rpcError;
-    const result = Array.isArray(rpcData) ? rpcData[0] : rpcData;
+    const result = unwrapJsonRpcResult(rpcData, "submit_secure_qr_table_order");
     if (!result?.ok) {
       const conflictCodes = new Set(["IDEMPOTENCY_KEY_REUSED", "QR_SESSION_INVALID", "QR_TABLE_INACTIVE"]);
       const status = result?.code === "INVALID_QR_TOKEN" ? 404 : conflictCodes.has(result?.code) ? 409 : 400;
@@ -525,7 +539,7 @@ router.patch("/submissions/:publicReference", qrWriteLimiter, validateBody(secur
       p_request_id: req.requestId || ""
     });
     if (rpcError) throw rpcError;
-    const result = Array.isArray(rpcData) ? rpcData[0] : rpcData;
+    const result = unwrapJsonRpcResult(rpcData, "edit_secure_qr_submission");
     if (!result?.ok) {
       const code = result?.code || "QR_EDIT_REJECTED";
       const status = code === "QR_SUBMISSION_NOT_OWNED" ? 404
@@ -609,4 +623,5 @@ router.get("/submissions/:publicReference", qrContextLimiter, async (req, res) =
   }
 });
 
+router.unwrapJsonRpcResult = unwrapJsonRpcResult;
 module.exports = router;
