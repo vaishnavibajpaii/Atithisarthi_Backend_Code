@@ -177,6 +177,19 @@ function verifySourceContracts() {
     "secure QR public reference must be captured inside the successful checkout request block");
   assert.ok(!checkout.includes("showOrderTrackingPrompt(tracking);\n  showToast("),
     "secure QR checkout success must not pass a null legacy tracking object into the prompt");
+  const checkoutFailureBlock = checkout.slice(
+    checkoutSaveCatchIndex,
+    checkout.indexOf("  // Clear cart", checkoutSaveCatchIndex)
+  );
+  includes(
+    checkoutFailureBlock,
+    "WhatsApp handoff skipped because no durable order exists",
+    "a failed write must explicitly skip the WhatsApp side effect"
+  );
+  assert.ok(
+    !checkoutFailureBlock.includes("ownerWhatsAppLink(summaryText)"),
+    "a failed durable order write must never become a WhatsApp-only order"
+  );
   includes(customerStatus, "expectedRoundVersion");
   const customerPatchRouteIndex = publicRoute.indexOf('router.patch("/submissions/:publicReference"');
   const customerStatusRouteIndex = publicRoute.indexOf('router.get("/submissions/:publicReference"');
