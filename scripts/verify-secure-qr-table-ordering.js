@@ -92,6 +92,7 @@ function verifySourceContracts() {
   const customerMigration = read("backend/scripts/upgrade-secure-qr-corrections.sql");
   const staffMigration = read("backend/scripts/upgrade-secure-qr-staff-corrections.sql");
   const lifecycleMigration = read("backend/scripts/upgrade-secure-qr-order-lifecycle.sql");
+  const task6SecureQrRuntime = read("backend/scripts/task6-f-secure-qr-runtime-activate.sql");
   const publicRoute = read("backend/routes/public-qr.js");
   const staffRoute = read("backend/routes/staff-qr-corrections.js");
   const outbox = read("backend/utils/qr-outbox.js");
@@ -122,6 +123,9 @@ function verifySourceContracts() {
     .forEach((value) => includes(lifecycleMigration, value));
   ["TABLE_ORDER_CHANGED", "isActiveTableOrderUniqueConflict"]
     .forEach((value) => includes(publicRoute, value));
+  ["merge_qr_order_totals", "replace_qr_order_totals", "task6_order_snapshot_valid",
+    "financial_snapshot_version", "secure_qr_order_create", "qr_idempotency_records", "qr_event_outbox"]
+    .forEach((value) => includes(task6SecureQrRuntime, value));
   includes(read("backend/routes/staff-tables.js"), 'billing === "billed"');
   ['new: "new"', 'confirmed: "accepted"', 'preparing: "preparing"',
     'completed: "served"', 'cancelled: "cancelled"']
