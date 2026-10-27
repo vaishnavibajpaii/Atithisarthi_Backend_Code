@@ -235,6 +235,12 @@ revoke all on function public.submit_secure_qr_table_order(text,text,text,text,j
 grant execute on function public.submit_secure_qr_table_order(text,text,text,text,jsonb,text)
   to app_tenant_runtime, service_role;
 
+-- Set the description while the SQL Editor execution role still owns the
+-- routine. After ownership moves to the restricted owner, this role must not
+-- retain the ability to modify the function.
+comment on function public.submit_secure_qr_table_order(text,text,text,text,jsonb,text) is
+  'Task 6 secure QR atomic order submit: tenant-safe helper grants, canonical price snapshot validation, durable QR idempotency, KOT/outbox transaction, and no client authority over monetary data.';
+
 do $task6_f_owner_membership$
 begin
   execute format(
@@ -259,8 +265,5 @@ begin
   );
 end;
 $task6_f_owner_membership_cleanup$;
-
-comment on function public.submit_secure_qr_table_order(text,text,text,text,jsonb,text) is
-  'Task 6 secure QR atomic order submit: tenant-safe helper grants, canonical price snapshot validation, durable QR idempotency, KOT/outbox transaction, and no client authority over monetary data.';
 
 commit;
