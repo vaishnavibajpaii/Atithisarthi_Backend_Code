@@ -472,7 +472,7 @@ app.get("/api/readiness", (req, res) => {
     success: ready,
     ready,
     env: env.nodeEnv,
-    releaseMarker: "task6-qr-tenant-rpc-decoding-20261027",
+    releaseMarker: "task6-table-finality-visibility-20261028",
     uptimeSeconds: Math.round(process.uptime()),
     timestamp: new Date().toISOString(),
     checks

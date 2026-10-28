@@ -34,18 +34,20 @@ function blocksTable(order = {}) {
   const status = String(order.status || "new").toLowerCase();
   const kitchen = String(order.kitchen_status || "").toLowerCase();
   const payment = String(order.payment_status || "unpaid").toLowerCase();
-
   const billing = String(order.billing_status || "not_billed").toLowerCase();
 
   if (status === "cancelled" || kitchen === "cancelled") return false;
-  if ((status === "completed" || kitchen === "served") &&
-      payment === "paid" && billing === "billed") {
+  const serviceComplete = status === "completed" || kitchen === "served";
+  const financiallyFinal = payment === "paid" && billing === "billed";
+
+  if (serviceComplete && financiallyFinal) {
     return false;
   }
+
   return (
     ACTIVE_STATUSES.includes(status) ||
     ["new", "accepted", "preparing", "ready", "delayed"].includes(kitchen) ||
-    (status === "completed" && payment !== "paid")
+    (status === "completed" && !financiallyFinal)
   );
 }
 
@@ -59,7 +61,11 @@ function liveStatus(table, order) {
   const payment = String(order.payment_status || "unpaid").toLowerCase();
   const billing = String(order.billing_status || "not_billed").toLowerCase();
 
-  if ((status === "completed" || billing === "billed") && payment !== "paid") return "billing_pending";
+  const serviceComplete = status === "completed" || kitchen === "served";
+  const financiallyFinal = payment === "paid" && billing === "billed";
+
+  if (serviceComplete && financiallyFinal) return "available";
+  if (serviceComplete && !financiallyFinal) return "billing_pending";
   if (kitchen === "ready") return "ready";
   if (["preparing", "delayed"].includes(kitchen) || status === "preparing") return "preparing";
   if (status === "new" || kitchen === "new") return "new";
@@ -453,4 +459,6 @@ router.post("/tables/:id/qr", requireStaffAuth, requireStaffManagerAccess, requi
   }
 });
 
+router.blocksTable = blocksTable;
+router.liveStatus = liveStatus;
 module.exports = router;
