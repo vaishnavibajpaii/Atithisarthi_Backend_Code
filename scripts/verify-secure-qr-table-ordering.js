@@ -171,6 +171,11 @@ function verifySourceContracts() {
   includes(checkout, "qr-order-status.html?submission=");
   includes(checkout, 'secureQrSubmissionReference = String(result?.order?.publicReference || "").trim()');
   includes(checkout, "showSecureQrOrderStatusPrompt(secureQrSubmissionReference)");
+  const secureQrStatusPromptIndex = checkout.indexOf("function showSecureQrOrderStatusPrompt");
+  const secureQrStatusPromptEnd = checkout.indexOf("function flattenMenuData", secureQrStatusPromptIndex);
+  const secureQrStatusPrompt = checkout.slice(secureQrStatusPromptIndex, secureQrStatusPromptEnd);
+  assert.ok(!secureQrStatusPrompt.includes('target="_blank"'),
+    "secure QR status must stay in the same tab so the session-scoped CSRF proof is retained");
   const checkoutSubmitIndex = checkout.indexOf("async function handleCheckoutSubmit");
   const trackingAssignmentIndex = checkout.indexOf("tracking = result?.trackingReady", checkoutSubmitIndex);
   const secureReferenceAssignmentIndex = checkout.indexOf("secureQrSubmissionReference = String", trackingAssignmentIndex);
