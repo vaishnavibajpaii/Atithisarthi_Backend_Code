@@ -11,10 +11,18 @@ function getRequiredEnv(name) {
 }
 
 const nodeEnv = getEnv("NODE_ENV", "development").trim().toLowerCase();
+const { parseTrustProxyHops } = require("../utils/http-security");
 
 const env = {
 nodeEnv,
 port: Number(getEnv("PORT", "10000")),
+  trustProxyHops: parseTrustProxyHops(getEnv("TRUST_PROXY_HOPS", "1")),
+  task7DependencyReadinessEnabled: getEnv("TASK7_DEPENDENCY_READINESS_ENABLED", "false") === "true",
+  task7OperationsEndpointEnabled: getEnv("TASK7_OPERATIONS_ENDPOINT_ENABLED", "false") === "true",
+  task7QrLeasedWorkerEnabled: getEnv("TASK7_QR_LEASED_WORKER_ENABLED", "false") === "true",
+  task7NotificationLeasesEnabled: getEnv("TASK7_NOTIFICATION_LEASES_ENABLED", "false") === "true",
+  task7NotificationSmtpDeadlineEnabled: getEnv("TASK7_NOTIFICATION_SMTP_DEADLINE_ENABLED", "false") === "true",
+  task7PublicNotificationOutboxEnabled: getEnv("TASK7_PUBLIC_NOTIFICATION_OUTBOX_ENABLED", "false") === "true",
 
 
   supabaseUrl: getRequiredEnv("SUPABASE_URL"),

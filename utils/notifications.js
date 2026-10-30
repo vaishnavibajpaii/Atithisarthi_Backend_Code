@@ -2,6 +2,9 @@ const { supabase } = require("./supabase");
 const { env } = require("../config/env");
 const { publishNotificationEvent } = require("./notification-live");
 const nodemailer = require("nodemailer");
+const {NotificationDeliveryLeaseStore}=require("./notification-delivery-lease-store");
+const {createNotificationDeliveryGate}=require("./notification-delivery-gate");
+const {sendBoundedNotificationSmtp}=require("./bounded-notification-smtp");
 const {
   buildNotificationDedupeKey,
   isMissingNotificationDedupeColumnError,
@@ -242,6 +245,8 @@ function getNotificationEmailTransporter() {
   }
 
   notificationEmailTransporter = nodemailer.createTransport({
+    disableFileAccess: true,
+    disableUrlAccess: true,
     host: String(env.notificationSmtpHost || "").trim(),
     port: Number(env.notificationSmtpPort || 587),
     secure: !!env.notificationSmtpSecure,
@@ -691,6 +696,8 @@ async function sendNotificationEventEmail(notificationEvent = {}, hotelSettings 
   const transporter = getNotificationEmailTransporter();
 
   return transporter.sendMail({
+    disableFileAccess: true,
+    disableUrlAccess: true,
     from: String(env.notificationEmailFrom || "").trim(),
     to: String(hotelSettings.ownerEmail || "").trim(),
     subject: buildNotificationEmailSubject(notificationEvent),
@@ -747,7 +754,7 @@ function getNotificationDeliverySkipReason(notificationEvent = {}, hotelSettings
   return `Notification delivery channel "${configuredChannel}" is not implemented yet`;
 }
 
-async function processNotificationEventDelivery(notificationEvent = {}, options = {}) {
+async function processNotificationEventDeliveryLegacy(notificationEvent = {}, options = {}) {
   const databaseClient = options.databaseClient || supabase;
   const processedAt = new Date().toISOString();
   const hotelSettings = await fetchHotelNotificationSettings(
@@ -782,6 +789,44 @@ async function processNotificationEventDelivery(notificationEvent = {}, options 
       processedAt
     }, databaseClient);
   }
+}
+
+// The new branch preserves caller-scoped settings reads and mail rendering.
+// Only its internal lease RPCs use the explicit privileged delivery broker.
+async function performLeasedNotificationDelivery(notificationEvent, options, effect) {
+  const settings=await fetchHotelNotificationSettings(notificationEvent.hotel_slug,options.databaseClient||supabase);
+  const reason=getNotificationDeliverySkipReason(notificationEvent,settings);
+  if(reason)return{status:NOTIFICATION_SKIPPED_STATUS,errorMessage:reason};
+  // Settings can involve I/O. Recheck the same lease immediately before SMTP.
+  await effect.assertOwned();
+  try{
+    if(env.task7NotificationSmtpDeadlineEnabled){
+      await sendBoundedNotificationSmtp({
+        transportOptions:{host:String(env.notificationSmtpHost||"").trim(),port:Number(env.notificationSmtpPort||587),secure:!!env.notificationSmtpSecure,
+          auth:{user:String(env.notificationSmtpUser||"").trim(),pass:String(env.notificationSmtpPass||"")}},
+        mail:{disableFileAccess:true,disableUrlAccess:true,from:String(env.notificationEmailFrom||"").trim(),to:String(settings.ownerEmail||"").trim(),
+          subject:buildNotificationEmailSubject(notificationEvent),text:buildNotificationEmailText(notificationEvent),html:buildNotificationEmailHtml(notificationEvent)},
+        signal:effect.signal,timeoutMs:45000
+      });
+    }else await sendNotificationEventEmail(notificationEvent,settings);
+    return{status:NOTIFICATION_SENT_STATUS,errorMessage:null};
+  }catch(error){
+    if(error?.code==="NOTIFICATION_DELIVERY_LEASE_LOST")throw error;
+    const category=["NOTIFICATION_SMTP_DEADLINE_PRE_DATA","NOTIFICATION_SMTP_OUTCOME_UNKNOWN","NOTIFICATION_SMTP_PRE_DATA_FAILED","NOTIFICATION_SMTP_PROVIDER_REJECTED"].includes(error?.code)?error.code:"NOTIFICATION_SMTP_DELIVERY_FAILED";
+    return{status:NOTIFICATION_FAILED_STATUS,errorMessage:category};
+  }
+}
+let leasedNotificationDelivery;
+async function processNotificationEventDelivery(notificationEvent = {}, options = {}) {
+  if(env.task7NotificationSmtpDeadlineEnabled&&!env.task7NotificationLeasesEnabled){
+    throw Object.assign(new Error("NOTIFICATION_DELIVERY_SHARED_GATE_REQUIRED"),{code:"NOTIFICATION_DELIVERY_SHARED_GATE_REQUIRED"});
+  }
+  if(env.task7QrLeasedWorkerEnabled&&!env.task7NotificationLeasesEnabled){
+    throw Object.assign(new Error("NOTIFICATION_DELIVERY_SHARED_GATE_REQUIRED"),{code:"NOTIFICATION_DELIVERY_SHARED_GATE_REQUIRED"});
+  }
+  if(!env.task7NotificationLeasesEnabled)return processNotificationEventDeliveryLegacy(notificationEvent,options);
+  leasedNotificationDelivery ||= createNotificationDeliveryGate({leaseStore:new NotificationDeliveryLeaseStore(supabase),perform:performLeasedNotificationDelivery});
+  return leasedNotificationDelivery(notificationEvent,options);
 }
 
 async function processNotificationEventDeliverySafely(notificationEvent = {}, options = {}) {

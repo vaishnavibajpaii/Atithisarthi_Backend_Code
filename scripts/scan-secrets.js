@@ -1,51 +1,52 @@
 "use strict";
 
-const fs = require("fs");
-const path = require("path");
+const fs = require("node:fs");
+const path = require("node:path");
+const { execFileSync } = require("node:child_process");
+const { scanText, validateAllowlist, decodeSource } = require("../utils/secret-scanner");
+const projectRoot = path.resolve(__dirname, "../..");
+const allowlistPath = path.join(projectRoot, "backend/config/secret-scan-fixtures.json");
 
-const projectRoot = path.resolve(__dirname, "..", "..");
-const excludedDirectories = new Set([".git", "node_modules", ".wrangler"]);
-const excludedExtensions = new Set([".png", ".jpg", ".jpeg", ".webp", ".jfif", ".gif", ".ico"]);
-const detectors = [
-  ["private-key-material", /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/],
-  ["postgres-connection-url", /postgres(?:ql)?:\/\/[^\s"']+/i],
-  ["razorpay-live-key-id", /rzp_live_[A-Za-z0-9]+/],
-  ["jwt-like-token", /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/],
-  ["assigned-secret", /(?:SUPABASE_SERVICE_ROLE_KEY|JWT_SECRET|RAZORPAY_KEY_SECRET|RAZORPAY_WEBHOOK_SECRET|SMTP_PASS|CLOUDFLARE_API_TOKEN|RAILWAY_TOKEN)\s*=\s*[^\s#]+/i]
-];
-
-function walk(directory, output = []) {
-  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-    if (entry.isDirectory() && excludedDirectories.has(entry.name)) continue;
-    const absolute = path.join(directory, entry.name);
-    if (entry.isDirectory()) walk(absolute, output);
-    else if (!excludedExtensions.has(path.extname(entry.name).toLowerCase())) output.push(absolute);
-  }
-  return output;
-}
-
-const findings = [];
-for (const file of walk(projectRoot)) {
-  let content;
-  try { content = fs.readFileSync(file, "utf8"); } catch { continue; }
-  content.split(/\r?\n/).forEach((line, index) => {
-    for (const [detector, pattern] of detectors) {
-      if (!pattern.test(line)) continue;
-      pattern.lastIndex = 0;
-      const isExample = /(?:your_|replace|changeme|example|redacted|<[^>]+>)/i.test(line);
-      const isIgnoredLocalEnv = /(?:^|[\\/])\.env$/i.test(file);
-      findings.push({
-        detector,
-        file: path.relative(projectRoot, file).replace(/\\/g, "/"),
-        line: index + 1,
-        status: isExample ? "placeholder/example" : isIgnoredLocalEnv ? "ignored-local-env-review-rotation" : "manual-review"
-      });
+function repositoryFiles() {
+  const files = new Set();
+  for (const repository of [".", "backend", "frontend"]) {
+    const cwd = path.resolve(projectRoot, repository);
+    const output = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], { cwd, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
+    for (const relative of output.split("\0").filter(Boolean)) {
+      const absolute = path.resolve(cwd, relative);
+      if (!absolute.startsWith(projectRoot + path.sep) || !fs.existsSync(absolute) || !fs.statSync(absolute).isFile()) continue;
+      files.add(absolute);
     }
-  });
+  }
+  return [...files].sort();
 }
 
-for (const finding of findings) {
-  console.log(`${finding.status} ${finding.detector} ${finding.file}:${finding.line}`);
+function main() {
+  const allowlist = validateAllowlist(fs.existsSync(allowlistPath) ? JSON.parse(fs.readFileSync(allowlistPath, "utf8")) : []);
+  const findings = [];
+  let scanned = 0;
+  for (const absolute of repositoryFiles()) {
+    const bytes = fs.readFileSync(absolute);
+    const file = path.relative(projectRoot, absolute).replace(/\\/g, "/");
+    const source = decodeSource(bytes, file);
+    if (source === null) continue;
+    findings.push(...scanText(source, file, allowlist));
+    scanned += 1;
+  }
+  const result = { recordedAt: new Date().toISOString(), scope: "CURRENT_TRACKED_AND_NONIGNORED_WORKTREE_ONLY", filesScanned: scanned,
+    counts: { manualReview: findings.filter((item) => item.status === "manual-review").length,
+      fixtures: findings.filter((item) => item.status === "fixture-approved").length,
+      placeholders: findings.filter((item) => item.status === "placeholder-example").length }, findings,
+    limitations: ["Does not scan Git history, ignored local .env or deployed secrets.", "Pattern detection is not a complete entropy/data-loss prevention audit.", "Matched values are never printed; fixture approval binds exact file, detector and value hash."] };
+  if (process.argv.includes("--json")) console.log(JSON.stringify(result, null, 2));
+  else {
+    for (const item of findings) console.log(`${item.status} ${item.detector} ${item.file}:${item.line}`);
+    console.log(`Secret scan: ${scanned} files, ${result.counts.manualReview} manual-review findings, ${result.counts.fixtures} exact approved fixtures, ${result.counts.placeholders} template placeholders. Values were not printed.`);
+  }
+  process.exitCode = result.counts.manualReview ? 1 : 0;
 }
-console.log(`Secret scan completed with ${findings.length} metadata-only findings; matched values were not printed.`);
-if (findings.some((finding) => finding.status === "manual-review")) process.exitCode = 1;
+
+if (require.main === module) {
+  try { main(); } catch { console.error("Secret scan failed; no values printed."); process.exitCode = 1; }
+}
+module.exports = { repositoryFiles };

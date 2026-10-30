@@ -51,7 +51,7 @@ function readJpegDimensions(buffer) {
 
 function readWebpDimensions(buffer) {
   if (
-    buffer.length < 30 ||
+    buffer.length < 20 ||
     buffer.toString("ascii", 0, 4) !== "RIFF" ||
     buffer.toString("ascii", 8, 12) !== "WEBP"
   ) return null;
@@ -59,7 +59,7 @@ function readWebpDimensions(buffer) {
   const chunk = buffer.toString("ascii", 12, 16);
   const declaredSize = buffer.readUInt32LE(4) + 8;
   if (declaredSize > buffer.length) return null;
-  if (chunk === "VP8X") {
+  if (chunk === "VP8X" && buffer.length >= 30) {
     return {
       width: 1 + buffer.readUIntLE(24, 3),
       height: 1 + buffer.readUIntLE(27, 3),

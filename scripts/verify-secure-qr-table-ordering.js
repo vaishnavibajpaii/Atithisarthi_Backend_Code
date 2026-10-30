@@ -96,6 +96,7 @@ function verifySourceContracts() {
   const publicRoute = read("backend/routes/public-qr.js");
   const staffRoute = read("backend/routes/staff-qr-corrections.js");
   const outbox = read("backend/utils/qr-outbox.js");
+  const outboxProcessor = read("backend/utils/qr-outbox-processor.js");
   const server = read("backend/server.js");
   const loader = read("frontend/js/data-loader.js");
   const appConfig = read("frontend/js/app-config.js");
@@ -142,8 +143,9 @@ function verifySourceContracts() {
     "staff lifecycle update must be declared after the invalid-status guard closes");
   ["correct_secure_qr_submission_staff", "calculateVerifiedOrderPricing", "MANAGER_REQUIRED"]
     .forEach((value) => includes(staffRoute, value));
-  ["claimEvent", "qrOutboxDeduplicationKey", "processQrOutboxBatch"]
-    .forEach((value) => includes(outbox, value));
+  ["createQrOutboxProcessor", "processQrOutboxBatch"].forEach((value) => includes(outbox, value));
+  ["claimEvent", "qrOutboxDeduplicationKey", "processQrOutboxBatch", "validateCanonicalSource", "validateNotification"]
+    .forEach((value) => includes(outboxProcessor, value));
   includes(server, "startQrOutboxWorker");
   includes(loader, 'params.get("q")');
   includes(loader, "resolvedHotelSlug");
@@ -209,7 +211,24 @@ function verifySourceContracts() {
   assert.ok(!customerStatus.includes("/api/public/qr/submissions/"),
     "status requests must not duplicate the configured /api prefix");
   includes(staffUi, "data-staff-qr-correction");
-  includes(observability, "[redacted]");
+  // Task 7 logs bounded operation classes instead of any raw URL. Exercise
+  // that stronger boundary; a literal replacement marker is no longer proof.
+  const { EventEmitter } = require("node:events");
+  const requestLogger = require("../utils/logger");
+  const originalInfo = requestLogger.info;
+  const recorded = [];
+  requestLogger.info = (message, meta) => recorded.push({ message, ...meta });
+  try {
+    const response = new EventEmitter();
+    Object.assign(response, { locals: {}, statusCode: 201, writeHead() {}, getHeader() { return undefined; } });
+    require("../middleware/request-observability").logRequestLifecycle({
+      method: "POST", headers: {}, originalUrl: "/api/public/qr/SYNTHETIC_PRIVATE_QR/orders?token=SYNTHETIC_PRIVATE_QUERY"
+    }, response, () => {});
+    response.emit("finish");
+  } finally { requestLogger.info = originalInfo; }
+  assert.equal(recorded.length, 1, "QR request must retain one safe operation log");
+  assert.equal(recorded[0].operation, "qr");
+  assert.ok(!JSON.stringify(recorded).includes("SYNTHETIC_PRIVATE"), "QR URL/session evidence must never reach logs");
   assert.ok(!publicRoute.includes("createNotificationEventSafely"), "QR route must not bypass durable outbox delivery");
   includes(read("frontend/js/staff-orders.js"), "STAFF_SLOW_REQUEST_WARNING_MS = 3000");
 }

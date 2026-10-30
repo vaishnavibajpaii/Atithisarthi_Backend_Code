@@ -1,0 +1,64 @@
+"use strict";
+const test=require("node:test"),assert=require("node:assert/strict"),fs=require("node:fs"),path=require("node:path"),vm=require("node:vm");
+const{createPublicNotificationIntentProcessor}=require("../utils/public-notification-intent-processor");
+const T="11111111-1111-4111-8111-111111111111",RPC="task7d_create_public_source_with_intent";
+const event=(change={})=>({id:"100",tenant_id:T,property_id:"10",hotel_slug:"fixture-hotel",source_type:"reservation",source_id:"20",event_type:"reservation_created",status:"pending",payload:{},...change});
+function loadSource(env,state){const module={exports:{}};vm.runInNewContext(fs.readFileSync(path.join(__dirname,"../utils/public-notification-source.js"),"utf8"),{module,exports:module.exports,require(name){if(name==="../config/env")return{env};if(name==="./notification-live")return{publishNotificationEvent(row){state.published.push(row);if(state.failPublish)throw new Error("SYNTHETIC_SSE_FAILURE");}};if(name==="./logger")return{warn() {}};throw new Error("UNAPPROVED_TEST_REQUIRE");}});return module.exports;}
+function sourceFixture({enabled=false,writes=true,shared=true}={}){
+ const state={inserted:[],rpcs:[],published:[],legacy:[],failPublish:false},record={tenant_id:T,property_id:"10",hotel_slug:"fixture-hotel",hotel_name:"Fixture Hotel",name:"Guest",phone:"9000000000",date:"2026-12-12",time:"18:30",guests:4,note:""};
+ const row=record=>({...record,id:"20",guests:record.guests===undefined?undefined:String(record.guests),created_at:"2026-10-29T00:00:00Z"});
+ const database={from(table){return{insert(records){state.inserted.push({table,records});this.data=row(records[0]);return this;},select(){return this;},async single(){return{data:state.insertError?null:this.data,error:state.insertError||null};}};},rpc(name,args){state.rpcs.push({name,args});return{async single(){if(state.rpcError)return{error:{code:"42883",message:"SYNTHETIC_MISSING_RPC"}};const data=row(args.p_source);return{data:{[RPC]:{source_record:data,notification_event:event({tenant_id:data.tenant_id,property_id:data.property_id,hotel_slug:data.hotel_slug,source_type:args.p_source_type,event_type:args.p_source_type+"_created",...state.notificationChange})}},error:null};}};}};
+ const env={task7PublicNotificationOutboxEnabled:enabled,tenantRuntimeWritesEnabled:writes,task7NotificationLeasesEnabled:shared};
+ return{state,record,database,env,api:loadSource(env,state)};
+}
+test("default-off adapter preserves ordinary single-row insert and performs no RPC",async()=>{const x=sourceFixture();const result=await x.api.insertPublicNotificationSource({databaseClient:x.database,sourceType:"reservation",record:x.record});assert.equal(result.data.id,"20");assert.equal(result.intentPersisted,false);assert.equal(x.state.inserted[0].table,"reservations");assert.equal(x.state.rpcs.length,0);assert.equal(x.state.published.length,0);});
+test("enabled adapter decodes restricted RPC wrapper and publishes only the committed card",async()=>{const x=sourceFixture({enabled:true});const result=await x.api.insertPublicNotificationSource({databaseClient:x.database,sourceType:"reservation",record:x.record});assert.equal(result.intentPersisted,true);assert.equal(x.state.inserted.length,0);assert.equal(x.state.rpcs[0].name,RPC);assert.equal(x.state.published.length,1);});
+test("enabled prerequisites and missing RPC fail closed without legacy business insert",async()=>{
+ for(const options of [{writes:false},{shared:false},{}]){const x=sourceFixture({enabled:true,...options});if(!Object.keys(options).length)x.state.rpcError=true;const result=await x.api.insertPublicNotificationSource({databaseClient:x.database,sourceType:"reservation",record:x.record});assert.ok(result.error);assert.equal(x.state.inserted.length,0);assert.equal(x.state.published.length,0);}
+});
+test("wrong owner, source, event type and unsafe IDs returned by RPC are rejected",async()=>{
+ for(const change of [{tenant_id:"22222222-2222-4222-8222-222222222222"},{property_id:"11"},{source_type:"order"},{source_id:"21"},{event_type:"other"},{id:9007199254740992}]){const x=sourceFixture({enabled:true});x.state.notificationChange=change;const result=await x.api.insertPublicNotificationSource({databaseClient:x.database,sourceType:"reservation",record:x.record});assert.equal(result.error.code,"PUBLIC_NOTIFICATION_OUTBOX_RESULT_INVALID");assert.equal(x.state.published.length,0);}
+});
+test("post-commit SSE failure leaves the durable source result successful",async()=>{const x=sourceFixture({enabled:true});x.state.failPublish=true;assert.equal((await x.api.insertPublicNotificationSource({databaseClient:x.database,sourceType:"reservation",record:x.record})).intentPersisted,true);});
+
+function routeFixture(type,options={}){
+ const x=sourceFixture(options),handlers=[];const files={reservation:"reservations",inquiry:"inquiries",contact_submission:"contact-submissions"};const noop=()=>{};
+ const deps={express:{Router(){return{post(...args){handlers.push(args.at(-1));}};}},"../utils/supabase":{supabase:x.database},"../middleware/public-rate-limiters":{publicReservationLimiter:noop,publicInquiryLimiter:noop,publicContactSubmissionLimiter:noop},"../utils/notifications":{createNotificationEventSafely(input){x.state.legacy.push(input);}},"../utils/public-notification-source":x.api,"../utils/public-hotel-access":{async ensurePublicHotelAccess(){return options.denied?null:{tenant_id:T,id:"10",slug:"fixture-hotel"};}},"../utils/tenant-route-database":{getTenantMutationClient(){return x.database;}},"../middleware/require-hotel-feature":{async ensureHotelFeatureEnabled(){return !options.featureDenied;}},"../validators/common":{validateBody(){return noop;}},"../validators/public":{}};
+ const module={exports:{}};vm.runInNewContext(fs.readFileSync(path.join(__dirname,"../routes/"+files[type]+".js"),"utf8"),{module,exports:module.exports,require(name){if(!(name in deps))throw new Error("UNAPPROVED_ROUTE_DEPENDENCY");return deps[name];},console:{error(){}}});
+ const validatedBody={hotelName:"Fixture Hotel",hotelSlug:"fixture-hotel",name:"Guest",phone:"9000000000",date:"2026-12-12",time:"18:30",guests:4,note:"",eventType:"Wedding",specialRequirements:"Quiet",email:"guest@example.test",subject:null,message:"Synthetic message",googleSheetStatus:null,googleSheetResponse:{ok:true}};
+ const response={statusCode:200,status(code){this.statusCode=code;return this;},json(body){this.body=body;return this;}};
+ return{...x,response,async run(change={}){await handlers[0]({validatedBody:{...validatedBody,...change}},response);return response;}};
+}
+test("all three default-off routes preserve 201 response and legacy notification payload",async()=>{
+ for(const type of ["reservation","inquiry","contact_submission"]){const x=routeFixture(type);const res=await x.run();assert.equal(res.statusCode,201);assert.equal(res.body.success,true);assert.equal(x.state.inserted.length,1);assert.equal(x.state.legacy.length,1);assert.equal(x.state.legacy[0].sourceType,type);if(type==="inquiry")assert.equal(x.state.legacy[0].payload.eventType,"Wedding");if(type==="contact_submission"){assert.equal(res.body.contactSubmission.email,"guest@example.test");assert.equal(x.state.legacy[0].payload.googleSheetStatus,"not_attempted");}}
+});
+test("all three enabled routes create only atomic intent and preserve public response shape",async()=>{
+ for(const type of ["reservation","inquiry","contact_submission"]){const x=routeFixture(type,{enabled:true});assert.equal((await x.run()).statusCode,201);assert.equal(x.state.rpcs.length,1);assert.equal(x.state.inserted.length,0);assert.equal(x.state.legacy.length,0);assert.equal(x.state.published.length,1);}
+});
+test("origin/hotel and reservation feature guards stop both insert paths",async()=>{
+ for(const enabled of [false,true]){const x=routeFixture("reservation",{enabled,denied:true});await x.run();assert.equal(x.state.rpcs.length+x.state.inserted.length,0);const y=routeFixture("reservation",{enabled,featureDenied:true});await y.run();assert.equal(y.state.rpcs.length+y.state.inserted.length,0);}
+});
+test("inquiry empty/number guests and contact JSON bookkeeping keep existing normalization",async()=>{
+ const x=routeFixture("inquiry");await x.run({guests:0});assert.equal(x.state.inserted[0].records[0].guests,"");assert.equal(x.state.legacy[0].payload.guests,"");
+ const y=routeFixture("contact_submission",{enabled:true});await y.run({googleSheetResponse:["invalid"],googleSheetStatus:""});assert.equal(JSON.stringify(y.state.rpcs[0].args.p_source.google_sheet_response),"{}");assert.equal(y.state.rpcs[0].args.p_source.google_sheet_status,"not_attempted");
+});
+test("contact missing-relation fallback preserves 503 and produces no notification",async()=>{const x=routeFixture("contact_submission");x.state.insertError={code:"42P01"};assert.equal((await x.run()).statusCode,503);assert.equal(x.state.legacy.length,0);assert.equal(x.state.published.length,0);});
+test("enabled route still returns 201 after committed intent publication fails",async()=>{const x=routeFixture("reservation",{enabled:true});x.state.failPublish=true;assert.equal((await x.run()).statusCode,201);assert.equal(x.state.legacy.length,0);assert.equal(x.state.rpcs.length,1);});
+
+function workerFixture(events=[event()],options={}){const state={delivered:[],acked:[],logs:[],metrics:[]};const worker=createPublicNotificationIntentProcessor({list:async()=>events,deliver:async row=>{state.delivered.push(row);if(options.throwDelivery)throw new Error("PRIVATE-DIAGNOSTIC");return{...row,status:options.status||"sent",...options.change};},ack:async id=>{state.acked.push(id);return options.ack!==false;},publish(){if(options.publishFail)throw new Error("SSE");},metrics:{worker(name,patch){assert.equal(name,"public_notification_intents");state.metrics.push(patch);}},logger:{warn(...args){state.logs.push(args);}}});return{state,worker};}
+test("recovery processor handles persisted intents and suppresses duplicate list entries",async()=>{const row=event(),x=workerFixture([row,row],{publishFail:true});assert.equal((await x.worker.processBatch()).processed,1);assert.equal(x.state.delivered.length,1);assert.equal(x.state.acked.length,1);assert.equal(x.state.metrics.at(-1).running,false);});
+test("failed, unknown and ambiguous outcomes never ACK an intent",async()=>{
+ for(const options of [{status:"failed"},{status:"pending"},{status:"processing"},{throwDelivery:true},{change:{source_id:"21"}},{ack:false}]){const x=workerFixture([event()],options);assert.equal((await x.worker.processBatch()).processed,0);if(options.ack!==false)assert.equal(x.state.acked.length,0);assert.ok(!JSON.stringify(x.state.logs).includes("PRIVATE-DIAGNOSTIC"));}
+});
+test("missing owner, unsupported source and unsafe IDs are rejected before sending",async()=>{
+ for(const change of [{tenant_id:null},{property_id:"0"},{source_type:"order"},{source_id:{}},{id:9007199254740992},{event_type:"other"}]){const x=workerFixture([event(change)]);await x.worker.processBatch();assert.equal(x.state.delivered.length,0);assert.equal(x.state.acked.length,0);}
+});
+test("processor prevents overlapping cycles and releases busy flag after selector error",async()=>{
+ let release,entered;const pending=new Promise(r=>release=r),ready=new Promise(r=>entered=r);const x=createPublicNotificationIntentProcessor({list:async()=>{entered();await pending;throw new Error("PRIVATE-DB-ERROR");},deliver(){},ack(){},metrics:{worker(){}},logger:{warn(){}}});const first=x.processBatch();await ready;assert.equal((await x.processBatch()).skipped,true);release();await assert.rejects(first,/PUBLIC_NOTIFICATION_INTENT_BATCH_FAILED/);assert.equal(x.isProcessing(),false);
+});
+test("actual worker startup is default off and checks both prerequisites without RPC",()=>{
+ for(const env of [{},{task7PublicNotificationOutboxEnabled:true},{task7PublicNotificationOutboxEnabled:true,task7NotificationLeasesEnabled:true}]){
+  const state={rpc:0,timers:0};const deps={"../config/env":{env},"../utils/supabase":{supabase:{rpc(){state.rpc++;throw new Error("UNEXPECTED_RPC");}}},"../utils/logger":{warn(){}},"../utils/operational-metrics":{metrics:{worker(){}}},"../utils/notification-live":{publishNotificationEvent(){}},"../utils/notifications":{processNotificationEventDelivery(){}},"../utils/public-notification-intent-processor":{createPublicNotificationIntentProcessor}};
+  const module={exports:{}};vm.runInNewContext(fs.readFileSync(path.join(__dirname,"../workers/public-notification-intent-worker.js"),"utf8"),{module,exports:module.exports,require(name){return deps[name];},setInterval(){state.timers++;return{unref(){}};},clearInterval(){}});assert.equal(module.exports.startPublicNotificationIntentWorker(),null);module.exports.stopPublicNotificationIntentWorker();assert.equal(state.timers+state.rpc,0);
+ }
+});

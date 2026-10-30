@@ -5,9 +5,20 @@ const cors = require("cors");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const crypto = require("crypto");
+const { safeParserError } = require("./utils/http-security");
 const { env } = require("./config/env");
 const logger = require("./utils/logger");
+logger.installSafeConsole();
+const { metrics } = require("./utils/operational-metrics");
+const { createDependencyHealth } = require("./utils/dependency-health");
+const { operationsRouter } = require("./routes/operations");
+const restrictedDatabaseHealth = createDependencyHealth({
+  probe: () => require("./utils/tenant-database").withAuthTransaction(
+    (client) => client.query("SELECT 1"), { readOnly: true, statementTimeoutMs: 2000 }
+  )
+});
 const { startQrOutboxWorker, stopQrOutboxWorker } = require("./utils/qr-outbox");
+const {startPublicNotificationIntentWorker,stopPublicNotificationIntentWorker}=require("./workers/public-notification-intent-worker");
 const {
   startPaymentWebhookWorker,
   stopPaymentWebhookWorker
@@ -52,7 +63,7 @@ const {
 const app = express();
 //const PORT = 5000;
 const PORT = env.port;
-app.set("trust proxy", 1);
+app.set("trust proxy", env.trustProxyHops);
 
 app.use(attachRequestContext);
 app.use(logRequestLifecycle);
@@ -460,12 +471,17 @@ app.get("/api/health", (req, res) => {
     message: "Backend is running",
     env: env.nodeEnv,
     uptimeSeconds: Math.round(process.uptime()),
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    ...logger.getDeploymentIdentity()
   });
 });
 
-app.get("/api/readiness", (req, res) => {
+app.get("/api/readiness", async (req, res) => {
   const checks = getReadinessChecks();
+  if (env.task7DependencyReadinessEnabled) {
+    const dependency = await restrictedDatabaseHealth();
+    checks.push(buildReadinessCheck("restricted_database_connectivity", dependency.ready, dependency.issue, true));
+  }
   const ready = checks.every((check) => check.ready);
 
   res.status(ready ? 200 : 503).json({
@@ -473,6 +489,7 @@ app.get("/api/readiness", (req, res) => {
     ready,
     env: env.nodeEnv,
     releaseMarker: "task6-table-finality-visibility-20261028",
+    ...logger.getDeploymentIdentity(),
     uptimeSeconds: Math.round(process.uptime()),
     timestamp: new Date().toISOString(),
     checks
@@ -488,6 +505,7 @@ app.use("/api/testimonials", testimonialsRoute);
 app.use("/api/admin/room-booking", adminRoomBookingRoute);
 app.use("/api/admin/room-checkout-bill", adminRoomCheckoutBillRoute);
 app.use("/api/admin/login-branding", adminLoginBrandingRouter);
+app.use("/api/admin", operationsRouter);
 app.use("/api/admin", adminRoute);
 app.use("/api/tenant", tenantRoute);
 app.use("/api/public/rooms", publicRoomBookingRoute);
@@ -522,6 +540,9 @@ logger.error("Unhandled server error", {
     });
   }
 
+  const parserError = safeParserError(err);
+  if (parserError) return res.status(parserError.status).json({ success: false, code: parserError.code, message: parserError.message });
+
   return res.status(500).json({
     success: false,
     message: "Internal server error"
@@ -539,16 +560,20 @@ logger.error("Unhandled server error", {
 
 try {
   const server = app.listen(PORT, () => {
+    metrics.start();
     logger.info("Server started", {
       port: PORT,
       nodeEnv: env.nodeEnv
     });
     startQrOutboxWorker();
     startPaymentWebhookWorker();
+    startPublicNotificationIntentWorker();
   });
   const shutdown = () => {
+    metrics.stop();
     stopQrOutboxWorker();
     stopPaymentWebhookWorker();
+    stopPublicNotificationIntentWorker();
     server.close(() => process.exit(0));
   };
   process.once("SIGTERM", shutdown);

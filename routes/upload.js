@@ -4,6 +4,7 @@ const path = require("path");
 const { supabase } = require("../utils/supabase");
 const { requireAdminAuth } = require("../middleware/require-admin-auth");
 const { getImageDimensions } = require("../utils/image-dimensions");
+const { IMAGE_UPLOAD_LIMITS, isAvifHeader, hasValidImageHeader, safeUploadError } = require("../utils/upload-image-policy");
 const {
   authorizePlatformAdminStoragePath,
   buildPlatformStoragePath,
@@ -59,10 +60,7 @@ const ALLOWED_IMAGE_TYPES = new Map([
     {
       defaultExt: ".avif",
       extensions: [".avif"],
-      isValidBuffer: (buffer) =>
-        buffer.length >= 16 &&
-        buffer.toString("ascii", 4, 8) === "ftyp" &&
-        ["avif", "avis"].some((brand) => buffer.toString("ascii", 8, 16).includes(brand))
+      isValidBuffer: isAvifHeader
     }
   ]
 ]);
@@ -70,9 +68,7 @@ const ALLOWED_IMAGE_TYPE_LABEL = "JPG, PNG, WebP, or AVIF";
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: {
-    fileSize: 5 * 1024 * 1024
-  },
+  limits: IMAGE_UPLOAD_LIMITS,
   fileFilter(req, file, cb) {
     if (!ALLOWED_IMAGE_TYPES.has(file.mimetype)) {
       return cb(new Error(`Only ${ALLOWED_IMAGE_TYPE_LABEL} uploads are allowed`));
@@ -88,9 +84,7 @@ function handleImageUpload(req, res, next) {
       return next();
     }
 
-    const message = error.code === "LIMIT_FILE_SIZE"
-      ? "Image file must be 5 MB or smaller"
-      : error.message || `Only ${ALLOWED_IMAGE_TYPE_LABEL} uploads are allowed`;
+    const message = safeUploadError(error);
 
     return res.status(400).json({
       success: false,
@@ -139,7 +133,7 @@ function isValidImageUpload(file) {
     return false;
   }
 
-  return imageConfig.isValidBuffer(file.buffer);
+  return imageConfig.isValidBuffer(file.buffer) && hasValidImageHeader(file);
 }
 
 router.post(

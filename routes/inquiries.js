@@ -2,6 +2,7 @@ const express = require("express");
 const { supabase } = require("../utils/supabase");
 const { publicInquiryLimiter } = require("../middleware/public-rate-limiters");
 const { createNotificationEventSafely } = require("../utils/notifications");
+const {insertPublicNotificationSource}=require("../utils/public-notification-source");
 const { ensurePublicHotelAccess } = require("../utils/public-hotel-access");
 const { getTenantMutationClient } = require("../utils/tenant-route-database");
 
@@ -38,10 +39,8 @@ router.post("/", publicInquiryLimiter, validateBody(inquirySchema), async (req, 
     // (Optional: manual validation can be removed since schema handles it)
 
     const database = getTenantMutationClient(req, supabase);
-    const { data, error } = await database
-      .from("inquiries")
-      .insert([
-        {
+    const { data, error, intentPersisted } = await insertPublicNotificationSource({
+      databaseClient:database,sourceType:"inquiry",record:{
           tenant_id: hotelAccess.tenant_id,
           property_id: hotelAccess.id,
           hotel_name: hotelName || "Unknown Hotel",
@@ -53,16 +52,14 @@ router.post("/", publicInquiryLimiter, validateBody(inquirySchema), async (req, 
           guests: guests || "",
           special_requirements: specialRequirements || "",
           status: "new"
-        }
-      ])
-      .select()
-      .single();
+      }
+    });
 
     if (error) {
       throw error;
     }
 
-    void createNotificationEventSafely({
+    if(!intentPersisted) void createNotificationEventSafely({
       databaseClient: database,
       tenantId: hotelAccess.tenant_id,
       propertyId: hotelAccess.id,

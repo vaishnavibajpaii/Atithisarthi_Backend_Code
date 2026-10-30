@@ -1,0 +1,11 @@
+{
+  "status": "PROPOSED_NOT_ACTIVATED",
+  "api": { "minimumRequests": 50, "serverErrorRatio": 0.05, "durationSeconds": 300 },
+  "liveness": { "consecutiveFailures": 3, "intervalSeconds": 30 },
+  "database": { "consecutiveFailures": 3, "intervalSeconds": 30 },
+  "workers": { "startupGraceSeconds": 120, "noProgressSeconds": 120 },
+  "webhook": { "oldestBacklogSeconds": 120, "durationSeconds": 300, "deadLetters": 1 },
+  "notifications": { "exhaustedRetries": 1, "oldestPendingSeconds": 600 },
+  "credentialExposure": { "confirmedEvents": 1 },
+  "notes": "Review against isolated TEST and observed traffic; no external delivery, notification recipient or paid service is configured."
+}

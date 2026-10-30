@@ -3,6 +3,7 @@ const path = require("path");
 const { Pool } = require("pg");
 const { env } = require("../config/env");
 const logger = require("./logger");
+const { metrics } = require("./operational-metrics");
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -183,7 +184,13 @@ async function runTenantTransaction(
     "statementTimeoutMs"
   );
 
-  const client = await pool.connect();
+  const startedAt = process.hrtime.bigint();
+  let client;
+  try { client = await pool.connect(); }
+  catch (error) {
+    metrics.database({ code: error?.code || "UNKNOWN", durationMs: Number(process.hrtime.bigint() - startedAt) / 1e6 });
+    throw error;
+  }
   let transactionStarted = false;
 
   try {
@@ -237,8 +244,11 @@ async function runTenantTransaction(
 
     await client.query("COMMIT");
 
+    metrics.database({ durationMs: Number(process.hrtime.bigint() - startedAt) / 1e6 });
+
     return result;
   } catch (error) {
+    metrics.database({ code: error?.code || "UNKNOWN", durationMs: Number(process.hrtime.bigint() - startedAt) / 1e6 });
     if (transactionStarted) {
       try {
         await client.query("ROLLBACK");
@@ -306,7 +316,13 @@ async function runAuthTransaction(pool, work, options = {}) {
     normalizePositiveInteger(env.tenantDatabaseStatementTimeoutMs, 15000),
     "statementTimeoutMs"
   );
-  const client = await pool.connect();
+  const startedAt = process.hrtime.bigint();
+  let client;
+  try { client = await pool.connect(); }
+  catch (error) {
+    metrics.database({ code: error?.code || "UNKNOWN", durationMs: Number(process.hrtime.bigint() - startedAt) / 1e6 });
+    throw error;
+  }
   let transactionStarted = false;
 
   try {
@@ -320,8 +336,10 @@ async function runAuthTransaction(pool, work, options = {}) {
     );
     const result = await work(client);
     await client.query("COMMIT");
+    metrics.database({ durationMs: Number(process.hrtime.bigint() - startedAt) / 1e6 });
     return result;
   } catch (error) {
+    metrics.database({ code: error?.code || "UNKNOWN", durationMs: Number(process.hrtime.bigint() - startedAt) / 1e6 });
     if (transactionStarted) {
       try {
         await client.query("ROLLBACK");
@@ -366,8 +384,15 @@ async function closeTenantPool() {
   await pool.end();
 }
 
+function getTenantPoolDiagnostics() {
+  if (!tenantPool) return { initialized: false };
+  return { initialized: true, total: tenantPool.totalCount, idle: tenantPool.idleCount,
+    waiting: tenantPool.waitingCount, maximum: tenantPool.options.max };
+}
+
 module.exports = {
   closeTenantPool,
+  getTenantPoolDiagnostics,
   normalizeTenantContext,
   runAuthTransaction,
   runTenantTransaction,

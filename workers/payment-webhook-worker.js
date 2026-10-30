@@ -3,6 +3,7 @@
 const crypto = require("crypto");
 const { env } = require("../config/env");
 const logger = require("../utils/logger");
+const { metrics } = require("../utils/operational-metrics");
 const { supabase } = require("../utils/supabase");
 const { finalizeProviderPayment } = require("../payments/payment-finalizer");
 const { PaymentIntentStore } = require("../payments/payment-intent-store");
@@ -165,13 +166,23 @@ async function processPaymentWebhookInboxOnce({ db = supabase, adapter = null, l
 async function drainOneSafely() {
   if (workerRunning) return;
   workerRunning = true;
-  try { await processPaymentWebhookInboxOnce(); }
+  let failed = false;
+  metrics.worker("payment_webhook", { running: true, started: true });
+  try {
+    const result = await processPaymentWebhookInboxOnce();
+    failed = !!result.failed || (!!result.claimed && !result.completed);
+  }
   catch (error) {
+    failed = true;
     logger.error("Payment webhook worker cycle failed", { errorCode: error.code || "WORKER_ERROR" });
-  } finally { workerRunning = false; }
+  } finally {
+    workerRunning = false;
+    metrics.worker("payment_webhook", { running: false, completed: true, failed });
+  }
 }
 
 function startPaymentWebhookWorker() {
+  metrics.worker("payment_webhook", { enabled: !!env.paymentWebhookWorkerEnabled });
   if (!env.paymentWebhookWorkerEnabled || workerTimer) return;
   const interval = Number.isFinite(env.paymentWebhookWorkerIntervalMs) && env.paymentWebhookWorkerIntervalMs >= 1000
     ? env.paymentWebhookWorkerIntervalMs : 5000;
@@ -183,6 +194,7 @@ function startPaymentWebhookWorker() {
 function stopPaymentWebhookWorker() {
   if (workerTimer) clearInterval(workerTimer);
   workerTimer = null;
+  metrics.worker("payment_webhook", { enabled: false, running: workerRunning });
 }
 
 module.exports = {

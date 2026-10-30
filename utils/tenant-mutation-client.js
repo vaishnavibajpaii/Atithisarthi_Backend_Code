@@ -42,6 +42,7 @@ const TENANT_RPCS = new Set([
   "delete_room_image", "edit_secure_qr_submission", "extend_room_booking",
   "get_staff_active_table_order",
   "is_dine_in_order_open", "record_room_booking_refund", "reorder_room_images",
+  "task7d_create_public_source_with_intent",
   "record_room_booking_payment",
   "room_negotiated_rate_ready", "settle_room_combined_checkout",
   "shift_room_booking", "submit_secure_qr_table_order"

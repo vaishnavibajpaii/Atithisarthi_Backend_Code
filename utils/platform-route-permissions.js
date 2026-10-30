@@ -3,6 +3,7 @@
 module.exports = Object.freeze([
   "GET /api/auth/me platform.session.read",
   "POST /api/auth/logout platform.session.read",
+  "GET /api/admin/operations platform.settings.read",
   "POST /api/admin/qr-links/sign platform.qr.manage",
   "GET /api/admin/orders platform.orders.read",
   "GET /api/admin/inquiries platform.inquiries.read",

@@ -2,6 +2,7 @@ const express = require("express");
 const { supabase } = require("../utils/supabase");
 const { publicContactSubmissionLimiter } = require("../middleware/public-rate-limiters");
 const { createNotificationEventSafely } = require("../utils/notifications");
+const {insertPublicNotificationSource}=require("../utils/public-notification-source");
 const { ensurePublicHotelAccess } = require("../utils/public-hotel-access");
 const { getTenantMutationClient } = require("../utils/tenant-route-database");
 const { validateBody } = require("../validators/common");
@@ -48,10 +49,8 @@ router.post("/", publicContactSubmissionLimiter, validateBody(contactSubmissionS
     }
 
     const database = getTenantMutationClient(req, supabase);
-    const { data, error } = await database
-      .from("contact_submissions")
-      .insert([
-        {
+    const { data, error, intentPersisted } = await insertPublicNotificationSource({
+      databaseClient:database,sourceType:"contact_submission",record:{
           tenant_id: hotelAccess.tenant_id,
           property_id: hotelAccess.id,
           hotel_slug: hotelAccess.slug,
@@ -70,10 +69,8 @@ router.post("/", publicContactSubmissionLimiter, validateBody(contactSubmissionS
               ? googleSheetResponse
               : {},
           updated_at: new Date().toISOString()
-        }
-      ])
-      .select()
-      .single();
+      }
+    });
 
     if (error) {
       if (isMissingContactSubmissionsRelationError(error)) {
@@ -86,7 +83,7 @@ router.post("/", publicContactSubmissionLimiter, validateBody(contactSubmissionS
       throw error;
     }
 
-    void createNotificationEventSafely({
+    if(!intentPersisted) void createNotificationEventSafely({
       databaseClient: database,
       tenantId: hotelAccess.tenant_id,
       propertyId: hotelAccess.id,

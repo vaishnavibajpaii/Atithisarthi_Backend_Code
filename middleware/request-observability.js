@@ -1,5 +1,8 @@
 const crypto = require("crypto");
 const logger = require("../utils/logger");
+const context = require("../utils/operational-context");
+const { metrics, operationForPath } = require("../utils/operational-metrics");
+const correlationKey = crypto.randomBytes(32);
 
 function createRequestId() {
   if (typeof crypto.randomUUID === "function") {
@@ -11,38 +14,15 @@ function createRequestId() {
 
 function getRequestId(req) {
   const headerValue = req.headers["x-request-id"];
-
-  if (typeof headerValue === "string" && headerValue.trim()) {
-    return headerValue.trim();
-  }
-
-  if (Array.isArray(headerValue)) {
-    const firstHeaderValue = String(headerValue[0] || "").trim();
-    if (firstHeaderValue) return firstHeaderValue;
-  }
-
+  // Do not reflect arbitrary caller text, tokens or line breaks into headers/logs.
+  if (typeof headerValue === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(headerValue)) return headerValue;
   return createRequestId();
 }
 
-function getSafePath(req) {
-  const path = `${req.baseUrl || ""}${req.path || ""}` || req.originalUrl?.split("?")[0] || "/";
-  return path
-    .replace(/(\/api\/public\/qr\/)[^/]+(?=\/(?:context|session|orders)(?:\/|$))/gi, "$1[redacted]")
-    .replace(/([?&](?:q|qctx|qrContextToken)=)[^&]+/gi, "$1[redacted]");
-}
-
-function getClientIp(req) {
-  const forwardedForHeader = req.headers["x-forwarded-for"];
-
-  if (typeof forwardedForHeader === "string" && forwardedForHeader.trim()) {
-    return forwardedForHeader.split(",")[0].trim();
-  }
-
-  if (Array.isArray(forwardedForHeader) && forwardedForHeader.length) {
-    return String(forwardedForHeader[0] || "").split(",")[0].trim();
-  }
-
-  return req.ip || req.socket?.remoteAddress || "";
+function traceId(req) {
+  const value = req.headers.traceparent;
+  const match = typeof value === "string" && /^00-([a-f0-9]{32})-([a-f0-9]{16})-[a-f0-9]{2}$/.exec(value);
+  return match && !/^0+$/.test(match[1]) && !/^0+$/.test(match[2]) ? match[1] : undefined;
 }
 
 function getRequestLogLevel(statusCode) {
@@ -52,8 +32,7 @@ function getRequestLogLevel(statusCode) {
 }
 
 function shouldSkipRequestLog(req = {}) {
-  const path = getSafePath(req);
-  return path === "/api/health" || path === "/api/readiness";
+  return operationForPath(req.originalUrl || req.url || req.path) === "health";
 }
 
 function attachRequestContext(req, res, next) {
@@ -63,7 +42,7 @@ function attachRequestContext(req, res, next) {
   res.locals.requestId = requestId;
   res.setHeader("x-request-id", requestId);
 
-  next();
+  context.run({ requestId, traceId: traceId(req), operation: operationForPath(req.originalUrl || req.url) }, next);
 }
 
 function logRequestLifecycle(req, res, next) {
@@ -84,10 +63,14 @@ function logRequestLifecycle(req, res, next) {
     return originalWriteHead.apply(this, args);
   };
 
-  res.on("finish", () => {
-    if (shouldSkipRequestLog(req)) return;
-
+  let recorded = false;
+  function complete(aborted) {
+    if (recorded) return;
+    recorded = true;
     const durationMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+    const operation = operationForPath(req.originalUrl || req.url);
+    metrics.request({ operation, statusCode: res.statusCode, durationMs, aborted });
+    if (shouldSkipRequestLog(req)) return;
     const logLevel = getRequestLogLevel(res.statusCode);
     const logMessage =
       res.statusCode >= 500
@@ -98,24 +81,28 @@ function logRequestLifecycle(req, res, next) {
 
     logger[logLevel](logMessage, {
       requestId: req.requestId || "",
-      method: req.method || "",
-      path: getSafePath(req),
+      method: ["GET", "POST", "PATCH", "PUT", "DELETE", "HEAD", "OPTIONS"].includes(req.method) ? req.method : "OTHER",
+      operation,
+      result: aborted ? "aborted" : res.statusCode === 409 ? "conflict" : res.statusCode >= 500 ? "server_error" : "completed",
       statusCode: res.statusCode || 0,
       durationMs: Number(durationMs.toFixed(2)),
       dbDurationMs: Number.isFinite(Number(res.locals?.dbDurationMs))
         ? Number(Number(res.locals.dbDurationMs).toFixed(2))
         : undefined,
       responseBytes: Number(res.getHeader("content-length") || 0) || undefined,
-      ip: getClientIp(req),
-      origin: req.headers.origin || "",
-      hotelHint: String(req.staffHotelSlug || req.query?.hotel || req.query?.hotelSlug || "").trim()
+      tenantCorrelation: req.tenant?.id && req.property?.id ? crypto.createHmac("sha256", correlationKey)
+        .update(`${req.tenant.id}:${req.property.id}`).digest("hex").slice(0, 16) : undefined
     });
-  });
+  }
+  res.on("finish", () => complete(false));
+  res.on("close", () => complete(!res.writableFinished));
 
   next();
 }
 
 module.exports = {
   attachRequestContext,
-  logRequestLifecycle
+  logRequestLifecycle,
+  getRequestId,
+  traceId
 };

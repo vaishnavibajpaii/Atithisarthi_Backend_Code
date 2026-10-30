@@ -1,37 +1,56 @@
-function normalizeMeta(meta) {
-  if (!meta || typeof meta !== "object" || Array.isArray(meta)) {
-    return meta || "";
-  }
+"use strict";
 
-  return meta;
+const { redactText, safeMetadata, environmentSecrets } = require("./log-redaction");
+const context = require("./operational-context");
+const originalConsole = Object.fromEntries(["log", "info", "warn", "error", "debug", "trace"].map((method) =>
+  [method, console[method].bind(console)]));
+let consoleInstalled = false;
+
+function getDeploymentIdentity() {
+  const candidate = process.env.RAILWAY_GIT_COMMIT_SHA || process.env.SOURCE_VERSION || "";
+  return { service: "atithisarthi-api", version: /^[a-f0-9]{7,64}$/i.test(candidate) ? candidate.toLowerCase() : "unversioned" };
 }
 
-function writeLog(level, message, meta) {
-  const timestamp = new Date().toISOString();
-  const normalizedMessage = String(message || "").trim() || "log";
-  const normalizedMeta = normalizeMeta(meta);
-
-  if (level === "ERROR") {
-    console.error(`[${level}]`, timestamp, normalizedMessage, normalizedMeta);
-    return;
+function createLogger({ write = (level, line) => originalConsole[level === "ERROR" ? "error" : level === "WARN" ? "warn" : "log"](line),
+  now = () => new Date().toISOString() } = {}) {
+  let dropped = 0;
+  // Environment credentials/version are loaded before logger startup. Rotation
+  // uses the existing process restart; avoid scanning the entire environment per log.
+  const secrets = environmentSecrets();
+  const nodeEnv = String(process.env.NODE_ENV || "development").toLowerCase();
+  const environment = ["development", "test", "staging", "production"].includes(nodeEnv) ? nodeEnv : "unknown";
+  const identity = getDeploymentIdentity();
+  function emit(level, message, meta) {
+    try {
+      const record = { timestamp: now(), level, environment, ...identity,
+        message: redactText(typeof message === "string" ? message : "event", secrets),
+        ...safeMetadata(context.get(), secrets), ...safeMetadata(meta, secrets) };
+      write(level, JSON.stringify(record));
+    } catch {
+      // Logging must never reverse a committed payment/order or break a response.
+      dropped += 1;
+    }
   }
-
-  if (level === "WARN") {
-    console.warn(`[${level}]`, timestamp, normalizedMessage, normalizedMeta);
-    return;
-  }
-
-  console.log(`[${level}]`, timestamp, normalizedMessage, normalizedMeta);
+  return { info: (message, meta) => emit("INFO", message, meta), warn: (message, meta) => emit("WARN", message, meta),
+    error: (message, meta) => emit("ERROR", message, meta), droppedCount: () => dropped };
 }
 
-module.exports = {
-  info(message, meta) {
-    writeLog("INFO", message, meta);
-  },
-  warn(message, meta) {
-    writeLog("WARN", message, meta);
-  },
-  error(message, meta) {
-    writeLog("ERROR", message, meta);
+const logger = createLogger();
+function installSafeConsole() {
+  if (consoleInstalled) return;
+  consoleInstalled = true;
+  for (const method of Object.keys(originalConsole)) {
+    console[method] = (...args) => {
+      try {
+        // Legacy console sites frequently pass full DB errors/payloads. Do not serialize them.
+        const error = args.find((value) => value instanceof Error);
+        const code = error && Object.getOwnPropertyDescriptor(error, "code")?.value;
+        logger[method === "error" || method === "trace" ? "error" : method === "warn" ? "warn" : "info"]("legacy_console", {
+          errorCode: typeof code === "string" && /^[a-z0-9_]{1,64}$/i.test(code) ? code : undefined
+        });
+      } catch { logger.warn("legacy_console_arguments_omitted"); }
+    };
   }
-};
+}
+
+module.exports = { ...logger, createLogger, getDeploymentIdentity, installSafeConsole };

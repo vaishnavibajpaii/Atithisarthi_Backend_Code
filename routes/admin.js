@@ -1,9 +1,11 @@
 const express = require("express");
 const { supabase } = require("../utils/supabase");
+const {env}=require("../config/env");
 const { requireAdminAuth } = require("../middleware/require-admin-auth");
 const { requireHotelFeature, resolveAdminHotelSlug } = require("../middleware/require-hotel-feature");
 const {
-  processNotificationEventDeliverySafely
+  processNotificationEventDeliverySafely,
+  processNotificationEventDelivery
 } = require("../utils/notifications");
 const {
   getOrderCreatedByStaffMap,
@@ -1291,6 +1293,20 @@ router.post("/notification-events/:id/resend", async (req, res) => {
     }
 
     const nextRetryCount = safeRetryCount + 1;
+    if(env.task7NotificationLeasesEnabled){
+      try{
+        const processedEvent=await processNotificationEventDelivery(notificationEvent,{
+          manualResend:{expectedStatus:currentStatus,expectedRetry:safeRetryCount}
+        });
+        return res.json({success:true,message:`Notification resend processed (attempt ${processedEvent.retry_count}/${NOTIFICATION_EVENT_MAX_RETRIES})`,
+          notificationEventMaxRetries:NOTIFICATION_EVENT_MAX_RETRIES,notificationEvent:processedEvent});
+      }catch(deliveryError){
+        if(/^NOTIFICATION_DELIVERY_/.test(deliveryError?.code||""))return res.status(409).json({success:false,
+          message:"Notification could not be admitted for resend; refresh its status before retrying",
+          notificationEventMaxRetries:NOTIFICATION_EVENT_MAX_RETRIES});
+        throw deliveryError;
+      }
+    }
     const lastRetryAt = new Date().toISOString();
 
     const { error: prepareRetryError } = await supabase

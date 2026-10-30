@@ -17,5 +17,6 @@ runtime-uploads/
 uploads/
 tmp/
 temp/
+.cache/
 .DS_Store
 Thumbs.db

@@ -11,6 +11,7 @@ const { buildNotificationDedupeKey } = require("../utils/notification-dedupe");
 const reviewAvatar = require("../../frontend/js/review-avatar");
 const frontendCards = require("../../frontend/js/staff-notification-cards");
 const { buildNotificationSummary } = require("../utils/notification-summary");
+const { buildPublicTestimonialsPayload } = require("../utils/public-testimonials-presentation");
 
 const root = path.join(__dirname, "..", "..");
 const read = (relativePath) =>
@@ -158,6 +159,40 @@ function verifyNotificationIdempotency() {
 
 }
 
+function verifyPublicTestimonialsEligibility(present = buildPublicTestimonialsPayload) {
+  const base = { id: "public-approved", guest_name: "Synthetic Guest", review_text: "Synthetic review", is_approved: true, is_active: true, is_archived: false };
+  const hidden = [
+    { ...base, id: "not-approved", is_approved: false },
+    { ...base, id: "missing-approval", is_approved: undefined },
+    { ...base, id: "string-approval", is_approved: "true" },
+    { ...base, id: "numeric-approval", is_approved: 1 },
+    { ...base, id: "archived", is_archived: true },
+    { ...base, id: "inactive", is_active: false },
+    { ...base, id: "empty-name", guest_name: "" },
+    { ...base, id: "empty-review", review_text: "" },
+    null
+  ];
+  const payload = present([base, ...hidden], "synthetic-hotel");
+  assert.deepStrictEqual(payload.testimonials.map((item) => item.id), [base.id], "only approved, active, unarchived complete reviews may be public");
+  assert.strictEqual(payload.testimonials[0].hotelSlug, "synthetic-hotel");
+  assert.deepStrictEqual(Object.keys(payload.testimonials[0]).sort(), ["id", "hotelSlug", "name", "role", "text", "stars", "avatar"].sort());
+  assert.deepStrictEqual(present(null, "synthetic-hotel"), { success: true, testimonials: [] });
+}
+
+function verifyPublicTestimonialsSourceContract(publicRoute, tenantUtility) {
+  assert.match(publicRoute, /buildPublicTestimonialsPayload\s*\}\s*=\s*require\("\.\.\/utils\/public-testimonials-presentation"\)/);
+  const start = publicRoute.indexOf('router.get("/testimonials/:slug",');
+  assert(start >= 0, "public testimonial route must exist");
+  const next = publicRoute.indexOf("router.get(", start + 1);
+  const route = publicRoute.slice(start, next < 0 ? undefined : next);
+  for (const field of ["is_archived", "is_active", "is_approved"]) {
+    assert.match(route, new RegExp(`\\.eq\\("${field}", ${field === "is_archived" ? "false" : "true"}\\)`));
+  }
+  assert.match(route, /buildPublicTestimonialsPayload\(\s*testimonialItems,\s*canonicalSlug\s*\)/);
+  assert.match(route, /fetchTenantPublicTestimonials\(\s*getTenantRequestScope\(req\),\s*canonicalSlug\s*\)/);
+  for (const predicate of [/item\.tenant_id = \$1::uuid/, /item\.property_id = \$2::bigint/, /item\.hotel_slug = \$3/, /item\.is_archived = false/, /item\.is_active = true/, /item\.is_approved = true/]) assert.match(tenantUtility, predicate);
+}
+
 function verifySourceContracts() {
   const publicRoute = read("backend/routes/public.js");
   const staffRoute = read("backend/routes/staff.js");
@@ -169,8 +204,7 @@ function verifySourceContracts() {
   const staffHtml = read("frontend/staff-orders.html");
   const upgradeSql = read("backend/scripts/upgrade-review-card-notifications.sql");
 
-  assert.match(publicRoute, /\.eq\("is_approved", true\)/);
-  assert.match(publicRoute, /item\.is_approved === true/);
+  verifyPublicTestimonialsSourceContract(publicRoute, read("backend/utils/tenant-public-testimonials.js"));
   assert.match(staffRoute, /invalidatePublicTestimonialsCache\(hotelSlug\)/);
   assert.match(staffRoute, /\.eq\("hotel_slug", hotelSlug\)/);
   assert.match(staffRoute, /\.eq\("updated_at", currentUpdatedAt\)/);
@@ -209,12 +243,17 @@ function verifySourceContracts() {
   assert.match(staffHtml, /@media \(prefers-reduced-motion: reduce\)/);
 }
 
-verifyAvatarResolver();
-verifyCardRegistry();
-verifyNotificationSummaryCounts();
-verifyNotificationIdempotency();
-verifySourceContracts();
+function main() {
+  verifyAvatarResolver();
+  verifyCardRegistry();
+  verifyNotificationSummaryCounts();
+  verifyNotificationIdempotency();
+  verifyPublicTestimonialsEligibility();
+  verifySourceContracts();
+  console.log("Review avatar, card notifications, and audio workflow verification passed.");
+}
 
-console.log("Review avatar, card notifications, and audio workflow verification passed.");
+if (require.main === module) main();
+module.exports = { main, verifyPublicTestimonialsEligibility, verifyPublicTestimonialsSourceContract };
 
 
